@@ -1,0 +1,4 @@
+*.tar
+node_modules/
+dist/
+.vscode
