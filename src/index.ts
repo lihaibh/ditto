@@ -1,3 +1,3 @@
-export * from "./dump/MongoDump";
-export * from "./dump/contracts";
-export * from "./dump/errors";
+export * from "./MongoTransferer";
+export * from "./contracts";
+export * from "./errors";
