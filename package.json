@@ -7,7 +7,7 @@
   "author": "Lihai Ben-Haim <lihaibh@gmail.com>",
   "license": "MIT",
   "scripts": {
-    "prepublish": "tsc"
+    "prepublish": ""
   },
   "types": "./dist/index.d.ts",
   "devDependencies": {
@@ -25,13 +25,14 @@
   },
   "dependencies": {
     "@types/tar-stream": "^2.1.0",
-    "bson-stream": "^0.0.8",
+    "bson": "^4.1.0",
     "joi": "^14.3.1",
     "lodash": "^4.17.15",
     "moment": "^2.26.0",
     "mongodb": "^3.5.8",
-    "rxjs": "^6.5.5",
+    "rxjs": "6.4.0",
     "rxjs-for-await": "^0.0.2",
+    "rxjs-stream": "^3.2.1",
     "tar-stream": "^2.1.2",
     "verror": "^1.10.0"
   }
