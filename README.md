@@ -69,9 +69,9 @@ async function restoreLocalfile2Mongo() {
 
 *copy mongodb database to another mongodb database*
 ```javascript
-const { MongoTransferer, MongoDBDuplexConnector, LocalFileSystemDuplexConnector } = require('mongodb-snapshot');
+const { MongoTransferer, MongoDBDuplexConnector } = require('mongodb-snapshot');
 
-async function restoreLocalfile2Mongo() {
+async function copyMongo2Mongo() {
     const mongo_connector_1 = new MongoDBDuplexConnector({
         connection: {
             uri: `mongodb://<username>:<password>@<hostname>:<port>`,
