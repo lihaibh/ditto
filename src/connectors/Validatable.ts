@@ -1,5 +1,6 @@
 import * as joi from "joi";
-import { MongoConnectorSchemaError } from "../errors";
+
+import { ConnectorSchemaError } from "../errors";
 
 export abstract class Validatable {
     validate() {
@@ -7,7 +8,7 @@ export abstract class Validatable {
         const { error } = this.schema().validate(this.options(), { abortEarly: true });
 
         if (error) {
-            throw new MongoConnectorSchemaError(error);
+            throw new ConnectorSchemaError(error);
         }
     }
 

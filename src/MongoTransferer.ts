@@ -7,11 +7,6 @@ import { SourceConnector, TargetConnector } from "./connectors/Connector";
 import { Progress } from "./contracts";
 
 interface MongoTransfererOptions {
-  /**
-   * Amount of bytes to read each time from a source collection.
-   * The greater the number is, it will increase the performance.
-   */
-  batch_size?: number;
   source: SourceConnector;
   targets: TargetConnector[];
 }
@@ -70,6 +65,13 @@ export class MongoTransferer implements AsyncIterable<Progress> {
     return defer(async () => {
       const connectors = [this.source, ...this.targets];
 
+      if (this.targets.length === 0) {
+        return of({
+          total: 0,
+          write: 0
+        });
+      }
+
       // validate and connect to all connectors
       await Promise.all(connectors.map(connector => connector.validate()));
       await Promise.all(connectors.map(connector => connector.connect()));
@@ -84,13 +86,6 @@ export class MongoTransferer implements AsyncIterable<Progress> {
           data$: this.source.data$(metadata.name),
           metadata
         }));
-
-      if ((this.targets as any).length === 0) {
-        return of({
-          total: 0,
-          write: 0
-        });
-      }
 
       // cleanup all the targets before creating and writing data into them
       await Promise.all(

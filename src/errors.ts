@@ -10,7 +10,7 @@ export class MongoTransferError extends VError {
   }
 }
 
-export class MongoConnectorSchemaError extends MongoTransferError {
+export class ConnectorSchemaError extends MongoTransferError {
   constructor(cause: Error) {
     super(cause);
   }

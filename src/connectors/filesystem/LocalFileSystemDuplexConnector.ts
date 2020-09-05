@@ -1,10 +1,11 @@
-import { FileSystemDuplexConnector } from "./FileSystemDuplexConnector";
-import { GzipOpts } from "../../contracts";
 import { createReadStream, createWriteStream, access, unlink } from "fs";
 import * as joi from "joi";
 import { pick, merge } from "lodash";
 import { promisify } from 'util';
 import * as zlib from 'zlib';
+
+import { FileSystemDuplexConnector } from "./FileSystemDuplexConnector";
+import { GzipOpts } from "../../contracts";
 
 const accessP = promisify(access);
 const unlinkP = promisify(unlink);

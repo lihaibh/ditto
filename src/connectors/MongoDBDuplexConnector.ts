@@ -1,15 +1,16 @@
-import { TargetConnector, SourceConnector, CollectionData } from "./Connector";
-import { MongoDBConnection, CollectionMetadata as CollectionMetadata } from "../contracts";
+
 import { MongoClient, Db, Collection } from "mongodb";
 import { Observable, defer, EMPTY, from, concat, merge } from "rxjs";
 import { mergeAll, map, mergeMap, bufferCount, toArray } from 'rxjs/operators';
 import { streamToRx } from 'rxjs-stream';
 import * as joi from 'joi';
+import * as BSON from 'bson';
+
+import { TargetConnector, SourceConnector, CollectionData } from "./Connector";
+import { MongoDBConnection, CollectionMetadata as CollectionMetadata } from "../contracts";
 import { Validatable } from "./Validatable";
 import { pick, merge as loMerge } from "lodash";
 import { eachValueFrom } from "rxjs-for-await";
-
-import * as BSON from 'bson';
 import { convertAsyncGeneratorToObservable } from "../utils";
 
 const BSON_DOC_HEADER_SIZE = 4;

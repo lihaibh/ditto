@@ -1,4 +1,4 @@
-import { TargetConnector, SourceConnector, WritableData, CollectionData } from "../Connector";
+import { TargetConnector, SourceConnector, CollectionData } from "../Connector";
 import { Readable, Writable } from "stream";
 import { GzipOpts, CollectionMetadata } from "../../contracts";
 import { Observable, Observer, concat, ReplaySubject, defer, fromEvent, throwError } from "rxjs";

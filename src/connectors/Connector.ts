@@ -96,17 +96,7 @@ export interface TargetConnector extends Connector {
     write(collections: CollectionData[]): Observable<number>;
 }
 
-export interface DocumentBatch {
-    bytes: number;
-    documents: any[];
-}
-
 export interface CollectionData {
     data$: Observable<Buffer>;
-    metadata: CollectionMetadata;
-}
-
-export interface WritableData {
-    batch: Buffer; // in bson format
     metadata: CollectionMetadata;
 }
