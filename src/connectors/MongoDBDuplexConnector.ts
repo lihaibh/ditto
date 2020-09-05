@@ -1,12 +1,12 @@
-import { TargetConnector, SourceConnector, WritableData } from "./Connector";
+import { TargetConnector, SourceConnector, CollectionData } from "./Connector";
 import { MongoDBConnection, CollectionMetadata as CollectionMetadata } from "../contracts";
 import { MongoClient, Db, Collection } from "mongodb";
-import { Observable, defer, EMPTY, ReplaySubject, from, concat } from "rxjs";
-import { mergeAll, switchMap, map, groupBy, mergeMap, bufferCount } from 'rxjs/operators';
+import { Observable, defer, EMPTY, from, concat, merge } from "rxjs";
+import { mergeAll, map, mergeMap, bufferCount, toArray } from 'rxjs/operators';
 import { streamToRx } from 'rxjs-stream';
 import * as joi from 'joi';
 import { Validatable } from "./Validatable";
-import { pick } from "lodash";
+import { pick, merge as loMerge } from "lodash";
 import { eachValueFrom } from "rxjs-for-await";
 
 import * as BSON from 'bson';
@@ -20,55 +20,62 @@ const schema = joi.object({
         dbname: joi.string().required(),
         connectTimeoutMS: joi.number().optional()
     }).required(),
-    remove_on_failure: joi.boolean().optional(),
-    bulkWriteSize: joi.number().optional(),
+    assource: joi.object({
+        bulk_read_size: joi.number().optional(),
+    }).required(),
+    astarget: joi.object({
+        remove_on_failure: joi.boolean().optional(),
+        remove_on_startup: joi.boolean().optional(),
+        documents_bulk_write_count: joi.number().optional(),
+    }).required(),
 });
 
 export interface MongoDBConnectorOptions {
     connection: MongoDBConnection;
-    remove_on_failure?: boolean;
-    remove_on_startup?: boolean;
 
     /**
-     * The amount of documents to write in each operation.
-     * The greater this number is the better performance it will provide as it will make less writes to the MongoDB server.
+     * data related to this connector as a source
      */
-    bulkWriteSize?: number;
-}
+    assource?: Partial<AsSourceOptions>;
 
-interface CollectionDocument {
-    raw: Buffer, obj: { [key: string]: any }
+    /**
+     * data related to this connector as a target
+     */
+    astarget?: Partial<AsTargetOptions>;
 }
 
 export class MongoDBDuplexConnector extends Validatable implements SourceConnector, TargetConnector {
-    name = 'mongodb';
-    connection: MongoDBConnection;
-    remove_on_failure: boolean;
-    remove_on_startup: boolean;
-    bulkWriteSize: number;
+    type = 'mongodb';
 
+    // options
+    connection: MongoDBConnection;
+    assource: AsSourceOptions;
+    astarget: AsTargetOptions;
+
+    // session data (after successful connection)
     private client?: MongoClient;
     private db?: Db;
     private collections?: Collection<any>[];
 
-    constructor({ connection, remove_on_failure = false, remove_on_startup = false, bulkWriteSize = 5000 }: MongoDBConnectorOptions) {
+    constructor({ connection, assource = {}, astarget = {} }: MongoDBConnectorOptions) {
         super();
 
         this.connection = connection;
-        this.remove_on_failure = remove_on_failure;
-        this.remove_on_startup = remove_on_startup;
-        this.bulkWriteSize = bulkWriteSize;
+
+        this.assource = loMerge({ bulk_read_size: 50 * 1024 }, assource);
+
+        this.astarget = loMerge({ remove_on_failure: true, remove_on_startup: true, documents_bulk_write_count: 1000 }, astarget);
     }
 
     // as source
-    batch$(collection_name: string, batch_size: number) {
+    data$(collection_name: string) {
         return defer(async () => {
             if (!this.db) {
                 return EMPTY;
             }
 
             const collection = this.db.collection(collection_name);
-            const data_stream = collection.find().batchSize(batch_size) as NodeJS.ReadableStream;
+            const data_stream = collection.find().batchSize(this.assource.bulk_read_size) as NodeJS.ReadableStream;
 
             return streamToRx(data_stream) as Observable<Buffer>
         }).pipe(
@@ -85,11 +92,11 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
     }
 
     async fullname() {
-        return this.name;
+        return `type: ${this.type}, database: ${this.connection.dbname}`;
     }
 
     options() {
-        return pick(this, 'connection', 'remove_on_failure', 'bulkWriteSize');
+        return pick(this, 'connection', 'assource', 'astarget');
     }
 
     schema() {
@@ -116,14 +123,14 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
             throw new Error("Need to connect to the data source before using this method.");
         }
 
-        return this.db.collection(metadata.name).createIndexes(metadata.indexes)
+        return this.db.collection(metadata.name).createIndexes(metadata.indexes);
     }
 
     writeCollectionData(collection_name: string, data$: Observable<Buffer>): Observable<number> {
         const documents$ = convertAsyncGeneratorToObservable(getDocumentsGenerator(data$));
 
         return documents$.pipe(
-            bufferCount(this.bulkWriteSize),
+            bufferCount(this.astarget.documents_bulk_write_count),
             mergeMap(async (documents: CollectionDocument[]) => {
                 if (documents.length > 0) {
                     await this.insertCollectionDocuments(collection_name, documents as [CollectionDocument]);
@@ -163,17 +170,15 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
             })
     }
 
-    write(data$: Observable<WritableData>, metadatas: CollectionMetadata[]): Observable<number> {
+    write(collections: CollectionData[]): Observable<number> {
         return defer(() => {
-            const push_metadata_promises = metadatas.map(async (metadata) =>
-                this.writeCollectionMetadata(metadata)
+            const metadata$ = merge(...collections.map(({ metadata }) =>
+                from(this.writeCollectionMetadata(metadata))
+            )).pipe(toArray(), map(() => 0));
+
+            const content$ = merge(...collections.map(({ metadata, data$ }) =>
+                this.writeCollectionData(metadata.name, data$))
             );
-
-            const metadata$ = from(Promise.all(push_metadata_promises)).pipe(map(() => 0));
-
-            const content$ = data$.pipe(
-                groupBy(({ metadata: { name } }) => name, (writable: WritableData) => writable, undefined, () => new ReplaySubject()),
-                mergeMap((group$) => this.writeCollectionData(group$.key, group$.pipe(map(writable => writable.batch)))));
 
             return concat(metadata$, content$);
         });
@@ -296,4 +301,35 @@ async function* getDocumentsGenerator(data$: Observable<Buffer>): AsyncGenerator
             }
         }
     }
+}
+
+interface CollectionDocument {
+    raw: Buffer, obj: { [key: string]: any }
+}
+
+interface AsSourceOptions {
+    /**
+     * The amount of bytes to read (in bson format) from mongodb database each time.
+     * The bigger the number is it will improve the performance as it will decrease the amount of reads from the database (less io consumption).
+     */
+    bulk_read_size: number;
+}
+
+interface AsTargetOptions {
+    /**
+    * Whether or not to remove the target object in case of an error.
+    */
+    remove_on_failure: boolean;
+
+    /**
+     * Whether or not to remove the target object if its exist before transfering content to it.
+     * It can help avoiding conflicts when trying to write data that already exist on the target connector.
+     */
+    remove_on_startup: boolean;
+
+    /**
+    * The amount of documents to write in each operation.
+    * The greater this number is the better performance it will provide as it will make less writes to the MongoDB server.
+    */
+    documents_bulk_write_count: number;
 }

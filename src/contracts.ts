@@ -1,5 +1,4 @@
 import { ZlibOptions } from "zlib";
-import { MongoTransferError } from "./errors";
 
 export type GzipOpts = Omit<ZlibOptions, "dictionary">;
 
@@ -26,4 +25,9 @@ export interface CollectionMetadata {
   name: string;
   size: number;
   indexes: any[];
+}
+
+export interface Progress {
+  total: number;
+  write: number;
 }

@@ -1,64 +1,97 @@
 import { FileSystemDuplexConnector } from "./FileSystemDuplexConnector";
 import { GzipOpts } from "../../contracts";
 import { createReadStream, createWriteStream, access, unlink } from "fs";
-import { Readable, Writable } from "stream";
 import * as joi from "joi";
-import { pick } from "lodash";
+import { pick, merge } from "lodash";
 import { promisify } from 'util';
+import * as zlib from 'zlib';
 
 const accessP = promisify(access);
 const unlinkP = promisify(unlink);
+
+const gzipSchema = joi.object({
+    flush: joi.number().optional(),
+    finishFlush: joi.number().optional(),
+    chunkSize: joi.number().optional(),
+    windowBits: joi.number().optional(),
+    level: joi.number().optional(),
+    memLevel: joi.number().optional(),
+    strategy: joi.number().optional(),
+}).required();
 
 const schema = joi.object({
     connection: joi.object({
         path: joi.string().required()
     }).required(),
-    remove_on_failure: joi.boolean().optional(),
-    gzip: joi.object({
-        flush: joi.number().optional(),
-        finishFlush: joi.number().optional(),
-        chunkSize: joi.number().optional(),
-        windowBits: joi.number().optional(),
-        level: joi.number().optional(),
-        memLevel: joi.number().optional(),
-        strategy: joi.number().optional(),
-    }).optional()
+    assource: joi.object({
+        bulk_read_size: joi.number().optional(),
+        gzip: gzipSchema
+    }).required(),
+    astarget: joi.object({
+        remove_on_failure: joi.boolean().optional(),
+        remove_on_startup: joi.boolean().optional(),
+        gzip: gzipSchema,
+        bulk_write_size: joi.number().optional()
+    }).required(),
+
 });
 
 export interface LocalFileSystemOptions {
     connection: LocalFileSystemConnection;
-    gzip?: GzipOpts;
-    remove_on_failure?: boolean;
-    remove_on_startup?: boolean;
+
+    /**
+     * data related to this connector as a source
+     */
+    assource?: Partial<AsSourceOptions>;
+
+    /**
+     * data related to this connector as a target
+     */
+    astarget?: Partial<AsTargetOptions>;
 }
 
 export class LocalFileSystemDuplexConnector extends FileSystemDuplexConnector {
-    name = 'local';
+    type = 'local';
+
+    // options
     connection: LocalFileSystemConnection;
+    assource: AsSourceOptions;
+    astarget: AsTargetOptions;
 
-    // extra options
-    remove_on_failure: boolean;
-    remove_on_startup: boolean;
-    gzip: GzipOpts;
-
-    constructor({ connection, remove_on_failure = false, remove_on_startup = false, gzip = { chunkSize: 5000 } }: LocalFileSystemOptions) {
+    constructor({ connection, assource = {}, astarget = {} }: LocalFileSystemOptions) {
         super();
 
         this.connection = connection;
-        this.remove_on_failure = remove_on_failure;
-        this.remove_on_startup = remove_on_startup;
-        this.gzip = gzip;
+
+        this.assource = merge({
+            bulk_read_size: 10000,
+            gzip: {
+                chunkSize: 50 * 1024,
+                level: zlib.constants.Z_BEST_SPEED,
+            },
+        }, assource);
+
+        this.astarget = merge({
+            remove_on_failure: true,
+            remove_on_startup: true,
+            gzip: {
+                chunkSize: 50 * 1024,
+                level: zlib.constants.Z_BEST_SPEED,
+            },
+            bulk_write_size: 50 * 1024
+        }, astarget);
     }
 
     createWriteStream() {
         return createWriteStream(this.connection.path, {
+            highWaterMark: this.astarget.bulk_write_size,
             autoClose: true,
             emitClose: true
         });
     }
 
-    createReadStream(batch_size?: number) {
-        return createReadStream(this.connection.path, { highWaterMark: batch_size });
+    createReadStream() {
+        return createReadStream(this.connection.path, { highWaterMark: this.assource.bulk_read_size });
     }
 
     async remove() {
@@ -72,7 +105,7 @@ export class LocalFileSystemDuplexConnector extends FileSystemDuplexConnector {
     }
 
     options() {
-        return pick(this, ['remove_on_failure', 'connection', 'gzip']);
+        return pick(this, ['connection', 'assource', 'astarget']);
     }
 
     schema() {
@@ -84,7 +117,7 @@ export class LocalFileSystemDuplexConnector extends FileSystemDuplexConnector {
     }
 
     async fullname() {
-        return this.name;
+        return `type: ${this.type}, path: ${this.connection.path}`;
     }
 }
 
@@ -97,4 +130,41 @@ export interface LocalFileSystemConnection {
      * The path to the archive file to create (relative to current working directory).
      */
     path: string;
+}
+
+interface AsSourceOptions {
+    /**
+     * options to use when extracting data from the source file
+     */
+    gzip: GzipOpts,
+
+    /**
+     * The amount of bytes to read (in bson format) from the file each time.
+     * The bigger the number is it will improve the performance as it will decrease the amount of reads from the disk (less io consumption).
+     */
+    bulk_read_size: number;
+}
+
+interface AsTargetOptions {
+    /**
+    * Whether or not to remove the target object in case of an error.
+    */
+    remove_on_failure: boolean;
+
+    /**
+     * Whether or not to remove the target object if its exist before transfering content to it.
+     * It can help avoiding conflicts when trying to write data that already exist on the target connector.
+     */
+    remove_on_startup: boolean;
+
+    /**
+     * options to use when compressing data into the target file
+     */
+    gzip: GzipOpts;
+
+    /**
+     * The amount of bytes to write into the file each time.
+     * The bigger the number is it will improve the performance as it will decrease the amount of writes to the disk.
+     */
+    bulk_write_size: number;
 }

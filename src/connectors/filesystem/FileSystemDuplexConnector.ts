@@ -1,21 +1,17 @@
-import { TargetConnector, SourceConnector, WritableData } from "../Connector";
+import { TargetConnector, SourceConnector, WritableData, CollectionData } from "../Connector";
 import { Readable, Writable } from "stream";
 import { GzipOpts, CollectionMetadata } from "../../contracts";
 import { Observable, Observer, concat, ReplaySubject, defer, fromEvent, throwError } from "rxjs";
-import { groupBy, concatMap, toArray, map, take, first, switchMapTo, catchError, switchMap } from 'rxjs/operators';
+import { groupBy, concatMap, toArray, map, take, catchError } from 'rxjs/operators';
 import * as tar from "tar-stream";
 import * as zlib from "zlib";
 import { Validatable } from "../Validatable";
 
-export interface FileSystemConnector {
-    gzip: GzipOpts;
+export interface FileSystemSourceConnector extends SourceConnector {
+    createReadStream(): Readable;
 }
 
-export interface FileSystemSourceConnector extends FileSystemConnector, SourceConnector {
-    createReadStream(batch_size?: number): Readable;
-}
-
-export interface FileSystemTargetConnector extends FileSystemConnector, TargetConnector {
+export interface FileSystemTargetConnector extends TargetConnector {
     createWriteStream(): Writable
 }
 
@@ -26,16 +22,50 @@ interface PartialCollectionMetadata {
 }
 
 export abstract class FileSystemDuplexConnector extends Validatable implements FileSystemSourceConnector, FileSystemTargetConnector {
-    write(source: Observable<WritableData>, metadata: CollectionMetadata[]): Observable<number> {
-        return write(this, source, metadata);
+
+    write(collections: CollectionData[]) {
+        return defer(() => {
+            const pack = tar.pack();
+            const output_file = this.createWriteStream();
+            const gzip = zlib.createGzip(this.astarget.gzip);
+
+            // pack streams
+            const metadata$ = concat(...collections.map(({ metadata }) => packMetadata$(pack, metadata))).pipe(toArray(), map(() => 0));
+            const content$ = concat(...collections.map(({ metadata: { name, size }, data$: collectionData$ }) => packCollectionData$(pack, { name, size }, collectionData$)));
+
+            // executing the stream
+            const file_close_promise = fromEvent(
+                pack.pipe(gzip).pipe(output_file),
+                'close'
+            ).pipe(take(1)).toPromise();
+
+            const finalizing$ = defer(async () => {
+                pack.finalize();
+            });
+
+            const closing$ = defer(async () => {
+                await file_close_promise;
+            });
+
+            const ending$ = concat(finalizing$, closing$).pipe(toArray(), map(() => 0));
+
+            const packing$ = concat(metadata$, content$).pipe(
+                catchError((err) => {
+                    return concat(ending$, throwError(err));
+                })
+            );
+
+
+            return concat(packing$, ending$);
+        });
     }
 
-    batch$(collection_name: string, batch_size: number): Observable<Buffer> {
+    data$(collection_name: string): Observable<Buffer> {
         return new Observable((observer: Observer<Buffer>) => {
             const extract = tar.extract();
 
-            const file_input_stream = this.createReadStream(batch_size);
-            const unzip = zlib.createGunzip(this.gzip);
+            const file_input_stream = this.createReadStream();
+            const unzip = zlib.createGunzip(this.assource.gzip);
 
             extract.on('entry', ({ size, name }, source_stream, next) => {
                 if (!name.endsWith('.bson')) {
@@ -75,7 +105,7 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
             const extract = tar.extract();
 
             const file_input_stream = this.createReadStream();
-            const unzip = zlib.createGunzip(this.gzip);
+            const unzip = zlib.createGunzip(this.assource.gzip);
 
             extract.on('entry', ({ size, name }, source_stream, next) => {
                 if (!name.endsWith('.metadata.json')) {
@@ -134,11 +164,10 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
         ).toPromise();
     };
 
-    abstract remove_on_failure: boolean;
-    abstract remove_on_startup: boolean;
+    abstract type: string;
     abstract connection: any;
-    abstract gzip: Pick<zlib.ZlibOptions, "flush" | "finishFlush" | "chunkSize" | "windowBits" | "level" | "memLevel" | "strategy">;
-    abstract name: string;
+    abstract assource: { [key: string]: any; gzip: GzipOpts; bulk_read_size: number };
+    abstract astarget: { [key: string]: any; remove_on_failure: boolean; remove_on_startup: boolean; gzip: GzipOpts; bulk_write_size: number; };
 
     abstract createReadStream(batch_size?: number): Readable
     abstract createWriteStream(): Writable;
@@ -150,63 +179,6 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
 
     abstract exists(): Promise<boolean>;
     abstract fullname(): Promise<string>;
-}
-
-export function write(connector: FileSystemTargetConnector, data$: Observable<WritableData>, metadatas: CollectionMetadata[]): Observable<number> {
-    return defer(() => {
-        const pack = tar.pack();
-        const output_file = connector.createWriteStream();
-        const gzip = zlib.createGzip(connector.gzip);
-
-        const metadatas_pack = [];
-
-        for (const metadata of metadatas) {
-            metadatas_pack.push(packMetadata$(pack, metadata));
-        }
-
-        // pack streams
-        const metadataPack$ = concat(...metadatas_pack).pipe(toArray(), map(() => 0));
-
-        const contentPack$ = data$.pipe(
-            groupBy(({ metadata: { name } }) => name, (writable: WritableData) => writable, undefined, () => new ReplaySubject()),
-            concatMap((dataByCollectionName$) =>
-                dataByCollectionName$.pipe(
-                    groupBy(({ metadata: { size } }) => size, ({ batch }: WritableData) => batch, undefined, () => new ReplaySubject()),
-                    first(), // taking only the first group by size
-                    concatMap((collectionData$) => {
-                        return packCollectionData$(pack, { name: dataByCollectionName$.key, size: collectionData$.key }, collectionData$);
-                    })
-                )
-            ),
-        );
-
-        // executing the stream
-        const file_close_promise = fromEvent(
-            pack.pipe(gzip).pipe(output_file),
-            'close'
-        ).pipe(take(1)).toPromise();
-
-        const finalizing$ = defer(async () => {
-            pack.finalize();
-
-            return 0;
-        });
-
-        const closing$ = defer(async () => {
-            await file_close_promise;
-
-            return 0;
-        });
-
-        const packing$ = concat(metadataPack$, contentPack$).pipe(
-            catchError((err) => {
-                return concat(finalizing$, closing$, throwError(err));
-            })
-        );
-
-
-        return concat(packing$, finalizing$, closing$);
-    });
 }
 
 function packMetadata$(pack: tar.Pack, metadata: CollectionMetadata): Observable<CollectionMetadata> {
@@ -229,6 +201,7 @@ function packMetadata$(pack: tar.Pack, metadata: CollectionMetadata): Observable
 }
 
 function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: number }, data$: Observable<Buffer>): Observable<number> {
+
     return new Observable((observer: Observer<number>) => {
 
         const entry = pack.entry({ name: `${metadata.name}.bson`, size: metadata.size }, (error) => {
@@ -250,7 +223,7 @@ function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: num
                         }
                     })
                 })
-            }),
+            })
         ).subscribe(
             observer.next.bind(observer),
             (error) => {

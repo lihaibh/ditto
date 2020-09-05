@@ -5,7 +5,7 @@ import { Observable } from "rxjs";
  * Represent an interface to access specific object that contains collections in the data source.
  */
 interface Connector {
-    name: string;
+    type: string;
     connection: any;
 
     /**
@@ -36,6 +36,20 @@ interface Connector {
 
 export interface SourceConnector extends Connector {
     /**
+     * data related to this connector as a source
+     */
+    assource: {
+        /**
+         * The amount of bytes to read (in bson format) from the data source object each time.
+         * The bigger the number is it will improve the performance as it will decrease the amount of reads from the data source object (less io consumption).
+         */
+        bulk_read_size: number;
+
+        // aditional properties
+        [key: string]: any;
+    }
+
+    /**
      * get all collections metadata from the source that can be transferred
      */
     transferable(): Promise<CollectionMetadata[]>;
@@ -44,22 +58,29 @@ export interface SourceConnector extends Connector {
      * get stream of documents from the object inside the data source
      * 
      * @param collection_name the collection name from the source object
-     * @param batch_size what will be the size of the batch (the bson amount of bytes to read each time).
      */
-    batch$(collection_name: string, batch_size: number): Observable<Buffer>;
+    data$(collection_name: string): Observable<Buffer>;
 }
 
 export interface TargetConnector extends Connector {
     /**
-     * Whether or not to remove the target object in case of an error
+     * data related to this connector as a target
      */
-    remove_on_failure: boolean;
+    astarget: {
+        /**
+        * Whether or not to remove the target object in case of an error.
+        */
+        remove_on_failure: boolean;
 
-    /**
-     * Whether or not to remove the target object when transfering content to it.
-     * It can help avoiding conflicts when trying to write data that already exist on the target connector.
-     */
-    remove_on_startup: boolean;
+        /**
+         * Whether or not to remove the target object if its exist before transfering content to it.
+         * It can help avoiding conflicts when trying to write data that already exist on the target connector.
+         */
+        remove_on_startup: boolean;
+
+        // additional properties
+        [key: string]: any;
+    }
 
     /**
      * removing the object that contains the collections
@@ -72,7 +93,7 @@ export interface TargetConnector extends Connector {
      * 
      * @return a stream of amount of data written to the data source object.
      */
-    write(source: Observable<WritableData>, metadata: CollectionMetadata[]): Observable<number>;
+    write(collections: CollectionData[]): Observable<number>;
 }
 
 export interface DocumentBatch {
@@ -80,8 +101,8 @@ export interface DocumentBatch {
     documents: any[];
 }
 
-export interface CollectionToWrite {
-    batch$: Observable<DocumentBatch>;
+export interface CollectionData {
+    data$: Observable<Buffer>;
     metadata: CollectionMetadata;
 }
 

@@ -1,13 +1,10 @@
-import { SourceConnector, TargetConnector } from "./connectors/Connector";
-import { Observable, defer, EMPTY, concat, merge, of } from "rxjs";
-import { map, scan, catchError, switchMapTo, mergeAll, finalize } from 'rxjs/operators';
-import { eachValueFrom } from "rxjs-for-await";
 import { omit } from "lodash";
+import { Observable, defer, EMPTY, merge, of } from "rxjs";
+import { filter, scan, catchError, switchMapTo, mergeAll, finalize } from 'rxjs/operators';
+import { eachValueFrom } from "rxjs-for-await";
 
-interface Progress {
-  total: number;
-  write: number;
-}
+import { SourceConnector, TargetConnector } from "./connectors/Connector";
+import { Progress } from "./contracts";
 
 interface MongoTransfererOptions {
   /**
@@ -26,12 +23,10 @@ interface MongoTransfererOptions {
 export class MongoTransferer implements AsyncIterable<Progress> {
   private source: SourceConnector;
   private targets: TargetConnector[];
-  private batch_size: number;
 
-  constructor({ source, targets = [], batch_size = 5000 }: MongoTransfererOptions) {
+  constructor({ source, targets = [] }: MongoTransfererOptions) {
     this.source = source;
     this.targets = [...targets];
-    this.batch_size = batch_size;
   }
 
   [Symbol.asyncIterator]() {
@@ -60,7 +55,7 @@ export class MongoTransferer implements AsyncIterable<Progress> {
   }
 
   /**
-   * Returns a promise that allows you to await until the dump operation is done.
+   * Returns a promise that allows you to await until the transfer operation is done.
    * The promise might be rejected if there was a critical error.
    * If the promise was fullfilled it will provide a summary details of the transfer operation.
    */
@@ -79,19 +74,16 @@ export class MongoTransferer implements AsyncIterable<Progress> {
       await Promise.all(connectors.map(connector => connector.validate()));
       await Promise.all(connectors.map(connector => connector.connect()));
 
-      const metadatas = await this.source.transferable();
+      const metadatas = (await this.source.transferable()).map(metadata => ({
+        ...metadata,
+        indexes: (metadata.indexes || []).map(index => omit(index, ['ns']))
+      }));
 
-      const data$ = concat(
-        ...metadatas.map(metadata =>
-          this.source.batch$(metadata.name, this.batch_size)
-            .pipe(
-              map(batch => ({
-                batch,
-                metadata
-              })),
-            )
-        ));
-
+      const datas =
+        metadatas.map(metadata => ({
+          data$: this.source.data$(metadata.name),
+          metadata
+        }));
 
       if ((this.targets as any).length === 0) {
         return of({
@@ -100,24 +92,23 @@ export class MongoTransferer implements AsyncIterable<Progress> {
         });
       }
 
-      // cleanup all the targets before writing data
+      // cleanup all the targets before creating and writing data into them
       await Promise.all(
-        this.targets.filter(target => target.remove_on_startup).map(
+        this.targets.filter(target => target.astarget.remove_on_startup).map(
           async target => {
-            await target.remove();
+            if (await target.exists()) {
+              await target.remove();
+            }
           }
         )
       );
 
-      const results = this.targets.map((target) =>
-        target.write(data$, metadatas.map(metadata => ({
-          ...metadata,
-          indexes: (metadata.indexes || []).map(index => omit(index, ['ns']))
-        }))).pipe(
+      const results = this.targets.map(target =>
+        target.write(datas).pipe(
           catchError((error) => {
             return defer(async () => {
               if (
-                target.remove_on_failure &&
+                target.astarget.remove_on_failure &&
                 await target.exists()
               ) {
                 console.warn(`removing: "${await target.fullname()}" because an error was thrown during the transfer`);
@@ -133,6 +124,7 @@ export class MongoTransferer implements AsyncIterable<Progress> {
 
       return merge(...results)
         .pipe(
+          filter((write_size) => write_size > 0),
           scan((acc: Progress, write_size: number) => ({
             ...acc,
             write: acc.write + write_size

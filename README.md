@@ -9,8 +9,8 @@ npm install mongodb-snapshot
 
 ## Usage
 *dump mongodb database to a local file*
-```javascript
-const { MongoTransferer, MongoDBDuplexConnector, LocalFileSystemDuplexConnector } = require('mongodb-snapshot');
+```typescript
+import { MongoTransferer, MongoDBDuplexConnector, LocalFileSystemDuplexConnector } from 'mongodb-snapshot';
 
 async function dumpMongo2Localfile() {
     const mongo_connector = new MongoDBDuplexConnector({
@@ -31,15 +31,15 @@ async function dumpMongo2Localfile() {
         targets: [localfile_connector],
     });
 
-    for await (const { total, write } of transferer.iterator()) {
+    for await (const { total, write } of transferer) {
         console.log(`remaining bytes to write: ${total - write}`);
     }
 }
 ```
 
 *restore mongodb database from a local file*
-```javascript
-const { MongoTransferer, MongoDBDuplexConnector, LocalFileSystemDuplexConnector } = require('mongodb-snapshot');
+```typescript
+import { MongoTransferer, MongoDBDuplexConnector, LocalFileSystemDuplexConnector } from 'mongodb-snapshot';
 
 async function restoreLocalfile2Mongo() {
     const mongo_connector = new MongoDBDuplexConnector({
@@ -60,7 +60,7 @@ async function restoreLocalfile2Mongo() {
         targets: [mongo_connector],
     });
 
-    for await (const { total, write } of transferer.iterator()) {
+    for await (const { total, write } of transferer) {
         console.log(`remaining bytes to write: ${total - write}`);
     }
 }
@@ -68,8 +68,8 @@ async function restoreLocalfile2Mongo() {
 
 
 *copy mongodb database to another mongodb database*
-```javascript
-const { MongoTransferer, MongoDBDuplexConnector } = require('mongodb-snapshot');
+```typescript
+import { MongoTransferer, MongoDBDuplexConnector } from 'mongodb-snapshot';
 
 async function copyMongo2Mongo() {
     const mongo_connector_1 = new MongoDBDuplexConnector({
@@ -98,7 +98,7 @@ async function copyMongo2Mongo() {
         targets: [mongo_connector_2, mongo_connector_3],
     });
 
-    for await (const { total, write } of transferer.iterator()) {
+    for await (const { total, write } of transferer) {
         console.log(`remaining bytes to write: ${total - write}`);
     }
 }
