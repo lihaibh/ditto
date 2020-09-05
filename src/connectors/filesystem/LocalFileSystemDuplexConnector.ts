@@ -50,11 +50,14 @@ export class LocalFileSystemDuplexConnector extends FileSystemDuplexConnector {
         this.gzip = gzip;
     }
 
-    createWriteStream(): Writable {
-        return createWriteStream(this.connection.path);
+    createWriteStream() {
+        return createWriteStream(this.connection.path, {
+            autoClose: true,
+            emitClose: true
+        });
     }
 
-    createReadStream(batch_size?: number): Readable {
+    createReadStream(batch_size?: number) {
         return createReadStream(this.connection.path, { highWaterMark: batch_size });
     }
 

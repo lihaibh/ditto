@@ -2,4 +2,3 @@
 node_modules
 *.tar
 .DS_Store
-src/MongoTransferer.spec.ts

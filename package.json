@@ -1,11 +1,19 @@
 {
   "name": "mongodb-snapshot",
-  "version": "1.0.0",
-  "description": "Manages MongoDB snapshots",
+  "version": "1.0.1",
+  "description": "Manages MongoDB snapshots, provides functionality to deliver MongoDB content between data sources for backup and restore",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "author": "Lihai Ben-Haim <lihaibh@gmail.com>",
   "license": "MIT",
+  "homepage": "https://github.com/lihaibh/mongodb-snapshot#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lihaibh/mongodb-snapshot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lihaibh/mongodb-snapshot/issues"
+  },
   "scripts": {
     "prepublish": ""
   },

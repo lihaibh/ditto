@@ -1,8 +1,8 @@
 import { TargetConnector, SourceConnector, WritableData } from "./Connector";
 import { MongoDBConnection, CollectionMetadata as CollectionMetadata } from "../contracts";
-import { MongoClient, Db, Collection, Cursor } from "mongodb";
-import { Observable, defer, EMPTY, ReplaySubject, interval, Observer } from "rxjs";
-import { mergeAll, switchMap, tap, map, groupBy, mergeMap, bufferCount, concatMap } from 'rxjs/operators';
+import { MongoClient, Db, Collection } from "mongodb";
+import { Observable, defer, EMPTY, ReplaySubject, from, concat } from "rxjs";
+import { mergeAll, switchMap, map, groupBy, mergeMap, bufferCount } from 'rxjs/operators';
 import { streamToRx } from 'rxjs-stream';
 import * as joi from 'joi';
 import { Validatable } from "./Validatable";
@@ -10,6 +10,7 @@ import { pick } from "lodash";
 import { eachValueFrom } from "rxjs-for-await";
 
 import * as BSON from 'bson';
+import { convertAsyncGeneratorToObservable } from "../utils";
 
 const BSON_DOC_HEADER_SIZE = 4;
 
@@ -96,12 +97,18 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
     }
 
     // as target
-    remove(): Promise<boolean> {
+    async remove() {
         if (!this.db || !this.client) {
             throw new Error("Need to connect to the data source before using this method.");
         }
 
-        return this.db.dropDatabase().then(() => true).catch(() => false);
+        try {
+            await this.db.dropDatabase();
+
+            return true;
+        } catch (e) {
+            return false;
+        }
     }
 
     async writeCollectionMetadata(metadata: CollectionMetadata) {
@@ -113,47 +120,15 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
     }
 
     writeCollectionData(collection_name: string, data$: Observable<Buffer>): Observable<number> {
-        return Observable.create(async (observer: Observer<CollectionDocument>) => {
-            let buffer = Buffer.alloc(0);
-            let next_doclen = null;
+        const documents$ = convertAsyncGeneratorToObservable(getDocumentsGenerator(data$));
 
-            for await (const data of eachValueFrom(data$)) {
-                buffer = Buffer.concat([buffer, data]);
-
-                // flush all documents from the buffer
-                let next_doclen = null;
-
-                if (buffer.length >= BSON_DOC_HEADER_SIZE) {
-                    next_doclen = buffer.readInt32LE(0);
-                } else {
-                    next_doclen = null;
-                }
-
-                while (next_doclen && buffer.length >= next_doclen) {
-                    const raw = buffer.slice(0, next_doclen);
-                    const obj = BSON.deserialize(raw);
-
-                    buffer = buffer.slice(next_doclen);
-
-                    observer.next({
-                        raw,
-                        obj
-                    });
-
-                    if (buffer.length >= BSON_DOC_HEADER_SIZE) {
-                        next_doclen = buffer.readInt32LE(0);
-                    } else {
-                        next_doclen = null;
-                    }
-                }
-            }
-
-            observer.complete();
-
-        }).pipe(
+        return documents$.pipe(
             bufferCount(this.bulkWriteSize),
-            mergeMap(async (documents: [CollectionDocument]) => {
-                await this.insertCollectionDocuments(collection_name, documents);
+            mergeMap(async (documents: CollectionDocument[]) => {
+                if (documents.length > 0) {
+                    await this.insertCollectionDocuments(collection_name, documents as [CollectionDocument]);
+                }
+
 
                 return documents.reduce((size, { raw }) => size + raw.length, 0);
             })
@@ -167,8 +142,8 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
 
         const collection = this.db.collection(collection_name);
 
-        function insert(documents: [CollectionDocument]) {
-            return collection.bulkWrite(documents.map(({ obj: document }) => ({
+        async function insert(documents: [CollectionDocument]) {
+            return await collection.bulkWrite(documents.map(({ obj: document }) => ({
                 insertOne: {
                     document
                 }
@@ -180,7 +155,7 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
             ))
         }
 
-        insert(documents)
+        return await insert(documents)
             .catch(async function () {
                 documents.forEach(({ obj: document }) => filterInvalidKeys(document, key => key && key.includes('.')));
 
@@ -189,19 +164,19 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
     }
 
     write(data$: Observable<WritableData>, metadatas: CollectionMetadata[]): Observable<number> {
-        // write the metadata first
-        return defer(async () => {
+        return defer(() => {
             const push_metadata_promises = metadatas.map(async (metadata) =>
                 this.writeCollectionMetadata(metadata)
             );
 
-            return await Promise.all(push_metadata_promises);
-        }).pipe(
-            switchMap(() => data$.pipe(
+            const metadata$ = from(Promise.all(push_metadata_promises)).pipe(map(() => 0));
+
+            const content$ = data$.pipe(
                 groupBy(({ metadata: { name } }) => name, (writable: WritableData) => writable, undefined, () => new ReplaySubject()),
-                concatMap((group$) => this.writeCollectionData(group$.key, group$.pipe(map(writable => writable.batch))))
-            )),
-        );
+                mergeMap((group$) => this.writeCollectionData(group$.key, group$.pipe(map(writable => writable.batch)))));
+
+            return concat(metadata$, content$);
+        });
     }
 
     async connect() {
@@ -219,7 +194,9 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
     }
 
     async close() {
-        await this.client?.isConnected() && this.client?.close();
+        if (this.client?.isConnected()) {
+            await this.client.close();
+        }
 
         this.client = undefined;
         this.db = undefined;
@@ -282,6 +259,41 @@ function filterInvalidKeys(obj: { [key: string]: any }, filterKeyFn: (key: strin
     for (let k in obj) {
         if (obj[k] && typeof obj[k] === 'object') {
             filterInvalidKeys(obj[k], filterKeyFn);
+        }
+    }
+}
+
+async function* getDocumentsGenerator(data$: Observable<Buffer>): AsyncGenerator<CollectionDocument> {
+    let buffer = Buffer.alloc(0);
+
+    for await (const data of eachValueFrom(data$)) {
+        buffer = Buffer.concat([buffer, data]);
+
+        let next_doclen = null;
+
+        if (buffer.length >= BSON_DOC_HEADER_SIZE) {
+            next_doclen = buffer.readInt32LE(0);
+        } else {
+            next_doclen = null;
+        }
+
+        // flush all documents from the buffer
+        while (next_doclen && buffer.length >= next_doclen) {
+            const raw = buffer.slice(0, next_doclen);
+            const obj = BSON.deserialize(raw);
+
+            buffer = buffer.slice(next_doclen);
+
+            yield {
+                raw,
+                obj
+            };
+
+            if (buffer.length >= BSON_DOC_HEADER_SIZE) {
+                next_doclen = buffer.readInt32LE(0);
+            } else {
+                next_doclen = null;
+            }
         }
     }
 }

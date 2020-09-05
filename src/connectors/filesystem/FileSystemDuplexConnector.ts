@@ -1,8 +1,8 @@
 import { TargetConnector, SourceConnector, WritableData } from "../Connector";
 import { Readable, Writable } from "stream";
 import { GzipOpts, CollectionMetadata } from "../../contracts";
-import { Observable, Observer, concat, from, ReplaySubject } from "rxjs";
-import { groupBy, finalize, concatMap, toArray, switchMap, map } from 'rxjs/operators';
+import { Observable, Observer, concat, ReplaySubject, defer, fromEvent, throwError } from "rxjs";
+import { groupBy, concatMap, toArray, map, take, first, switchMapTo, catchError, switchMap } from 'rxjs/operators';
 import * as tar from "tar-stream";
 import * as zlib from "zlib";
 import { Validatable } from "../Validatable";
@@ -34,8 +34,8 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
         return new Observable((observer: Observer<Buffer>) => {
             const extract = tar.extract();
 
-            const tar_source_stream = this.createReadStream(batch_size);
-            const gzip_stream = zlib.createGunzip(this.gzip);
+            const file_input_stream = this.createReadStream(batch_size);
+            const unzip = zlib.createGunzip(this.gzip);
 
             extract.on('entry', ({ size, name }, source_stream, next) => {
                 if (!name.endsWith('.bson')) {
@@ -65,7 +65,8 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
                 observer.complete();
             });
 
-            tar_source_stream.pipe(gzip_stream).pipe(extract);
+            // execute the stream
+            file_input_stream.pipe(unzip).pipe(extract);
         });
     }
 
@@ -73,8 +74,8 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
         return new Observable((observer: Observer<PartialCollectionMetadata>) => {
             const extract = tar.extract();
 
-            const tar_source_stream = this.createReadStream();
-            const gzip_stream = zlib.createGunzip(this.gzip);
+            const file_input_stream = this.createReadStream();
+            const unzip = zlib.createGunzip(this.gzip);
 
             extract.on('entry', ({ size, name }, source_stream, next) => {
                 if (!name.endsWith('.metadata.json')) {
@@ -117,7 +118,8 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
                 observer.complete();
             });
 
-            tar_source_stream.pipe(gzip_stream).pipe(extract);
+            // execute the stream
+            file_input_stream.pipe(unzip).pipe(extract);
         }).pipe(
             groupBy(({ name }) => name, (partial_metadatas: PartialCollectionMetadata) => partial_metadatas, undefined, () => new ReplaySubject()),
             concatMap(metadataGroup$ =>
@@ -151,10 +153,10 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
 }
 
 export function write(connector: FileSystemTargetConnector, data$: Observable<WritableData>, metadatas: CollectionMetadata[]): Observable<number> {
-    return new Observable((observer: Observer<number>) => {
+    return defer(() => {
         const pack = tar.pack();
-        const tar_write_stream = connector.createWriteStream();
-        const gzip_stream = zlib.createGzip(connector.gzip);
+        const output_file = connector.createWriteStream();
+        const gzip = zlib.createGzip(connector.gzip);
 
         const metadatas_pack = [];
 
@@ -163,34 +165,47 @@ export function write(connector: FileSystemTargetConnector, data$: Observable<Wr
         }
 
         // pack streams
-        const metadataPack$ = concat(...metadatas_pack);
+        const metadataPack$ = concat(...metadatas_pack).pipe(toArray(), map(() => 0));
 
         const contentPack$ = data$.pipe(
             groupBy(({ metadata: { name } }) => name, (writable: WritableData) => writable, undefined, () => new ReplaySubject()),
             concatMap((dataByCollectionName$) =>
                 dataByCollectionName$.pipe(
                     groupBy(({ metadata: { size } }) => size, ({ batch }: WritableData) => batch, undefined, () => new ReplaySubject()),
-                    // first(), // taking only the first group by size
+                    first(), // taking only the first group by size
                     concatMap((collectionData$) => {
                         return packCollectionData$(pack, { name: dataByCollectionName$.key, size: collectionData$.key }, collectionData$);
                     })
                 )
             ),
-
         );
 
-        pack.pipe(gzip_stream).pipe(tar_write_stream);
+        // executing the stream
+        const file_close_promise = fromEvent(
+            pack.pipe(gzip).pipe(output_file),
+            'close'
+        ).pipe(take(1)).toPromise();
 
-        const subscription = metadataPack$.pipe(
-            switchMap(() => contentPack$),
-            finalize(() => {
-                pack.finalize();
+        const finalizing$ = defer(async () => {
+            pack.finalize();
+
+            return 0;
+        });
+
+        const closing$ = defer(async () => {
+            await file_close_promise;
+
+            return 0;
+        });
+
+        const packing$ = concat(metadataPack$, contentPack$).pipe(
+            catchError((err) => {
+                return concat(finalizing$, closing$, throwError(err));
             })
-        ).subscribe(observer);
+        );
 
-        return () => {
-            subscription.unsubscribe();
-        }
+
+        return concat(packing$, finalizing$, closing$);
     });
 }
 
@@ -215,6 +230,7 @@ function packMetadata$(pack: tar.Pack, metadata: CollectionMetadata): Observable
 
 function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: number }, data$: Observable<Buffer>): Observable<number> {
     return new Observable((observer: Observer<number>) => {
+
         const entry = pack.entry({ name: `${metadata.name}.bson`, size: metadata.size }, (error) => {
             if (error) {
                 observer.error(error);
@@ -224,8 +240,8 @@ function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: num
         });
 
         const subscription = data$.pipe(
-            concatMap((data) => {
-                return from(new Promise<number>((resolve, reject) => {
+            concatMap(async (data) => {
+                return await new Promise<number>((resolve, reject) => {
                     entry.write(data, (error) => {
                         if (error) {
                             reject(error);
@@ -233,13 +249,14 @@ function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: num
                             resolve(data.length);
                         }
                     })
-                }))
-            })).subscribe(observer.next.bind(observer), (error) => {
+                })
+            }),
+        ).subscribe(
+            observer.next.bind(observer),
+            (error) => {
                 entry.end();
-                observer.error(error);
             }, () => {
                 entry.end();
-                observer.complete();
             });
 
         return () => {

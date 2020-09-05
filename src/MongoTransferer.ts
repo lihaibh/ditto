@@ -1,6 +1,6 @@
 import { SourceConnector, TargetConnector } from "./connectors/Connector";
 import { Observable, defer, EMPTY, concat, merge, of } from "rxjs";
-import { map, scan, catchError, switchMapTo, mergeAll } from 'rxjs/operators';
+import { map, scan, catchError, switchMapTo, mergeAll, finalize } from 'rxjs/operators';
 import { eachValueFrom } from "rxjs-for-await";
 import { omit } from "lodash";
 
@@ -104,8 +104,6 @@ export class MongoTransferer implements AsyncIterable<Progress> {
       await Promise.all(
         this.targets.filter(target => target.remove_on_startup).map(
           async target => {
-            console.log(`removing: ${await target.fullname()}`);
-
             await target.remove();
           }
         )
@@ -117,17 +115,18 @@ export class MongoTransferer implements AsyncIterable<Progress> {
           indexes: (metadata.indexes || []).map(index => omit(index, ['ns']))
         }))).pipe(
           catchError((error) => {
-            console.error(error);
-
             return defer(async () => {
               if (
                 target.remove_on_failure &&
                 await target.exists()
               ) {
-                console.warn(`removing: "${await target.fullname()}"`);
+                console.warn(`removing: "${await target.fullname()}" because an error was thrown during the transfer`);
                 await target.remove();
               }
             }).pipe(switchMapTo(EMPTY));
+          }),
+          finalize(async () => {
+            await target.close();
           })
         )
       );
@@ -145,7 +144,10 @@ export class MongoTransferer implements AsyncIterable<Progress> {
           )
         );
     }).pipe(
-      mergeAll()
+      mergeAll(),
+      finalize(async () => {
+        await this.source.close();
+      })
     );
   }
 }
