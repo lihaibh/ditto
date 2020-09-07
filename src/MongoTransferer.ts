@@ -76,7 +76,11 @@ export class MongoTransferer implements AsyncIterable<Progress> {
       await Promise.all(connectors.map(connector => connector.validate()));
       await Promise.all(connectors.map(connector => connector.connect()));
 
-      const metadatas = (await this.source.transferable()).map(metadata => ({
+      const metadatas = (await this.source.transferable()).filter((metadata) => {
+        const filter_collections = this.source.assource.collections || [];
+
+        return (filter_collections.length > 0 && filter_collections.includes(metadata.name)) || (filter_collections.length === 0);
+      }).map(metadata => ({
         ...metadata,
         indexes: (metadata.indexes || []).map(index => omit(index, ['ns']))
       }));
@@ -98,26 +102,39 @@ export class MongoTransferer implements AsyncIterable<Progress> {
         )
       );
 
-      const results = this.targets.map(target =>
-        target.write(datas).pipe(
-          catchError((error) => {
-            return defer(async () => {
-              if (
-                target.astarget.remove_on_failure &&
-                await target.exists()
-              ) {
-                console.warn(`removing: "${await target.fullname()}" because an error was thrown during the transfer`);
-                await target.remove();
-              }
-            }).pipe(switchMapTo(EMPTY));
-          }),
-          finalize(async () => {
-            await target.close();
-          })
-        )
-      );
+      const writes = this.targets.map(target => {
+        const collections = datas.filter(({ metadata: { name } }) => {
+          const filter_collections = target.astarget.collections || [];
 
-      return merge(...results)
+          return (filter_collections.length > 0 && filter_collections.includes(name)) || (filter_collections.length === 0);
+        });
+
+        return {
+          size: collections.reduce((total, { metadata: { size } }) => total + size, 0),
+          write$: collections.length === 0 ? EMPTY : target.write(collections).pipe(
+            catchError((error) => {
+              return defer(async () => {
+                console.error(`could not write collection data into: ${await target.fullname()} due to error:`);
+                console.error(error);
+
+                if (
+                  target.astarget.remove_on_failure &&
+                  await target.exists()
+                ) {
+                  console.warn(`removing: "${await target.fullname()}" because an error was thrown during the transfer`);
+
+                  await target.remove();
+                }
+              }).pipe(switchMapTo(EMPTY));
+            }),
+            finalize(async () => {
+              await target.close();
+            })
+          )
+        }
+      });
+
+      return merge(...writes.map(write => write.write$))
         .pipe(
           filter((write_size) => write_size > 0),
           scan((acc: Progress, write_size: number) => ({
@@ -125,7 +142,7 @@ export class MongoTransferer implements AsyncIterable<Progress> {
             write: acc.write + write_size
           }),
             {
-              total: metadatas.reduce((acc, metadata) => acc + metadata.size, 0) * this.targets.length,
+              total: writes.reduce((total, { size }) => total + size, 0),
               write: 0,
             }
           )
@@ -138,6 +155,3 @@ export class MongoTransferer implements AsyncIterable<Progress> {
     );
   }
 }
-
-
-

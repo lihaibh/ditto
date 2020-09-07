@@ -25,7 +25,10 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
 
     write(collections: CollectionData[]) {
         return defer(() => {
-            const pack = tar.pack();
+            const pack = tar.pack({
+                highWaterMark: this.astarget.bulk_write_size,
+            });
+
             const output_file = this.createWriteStream();
             const gzip = zlib.createGzip(this.astarget.gzip);
 
@@ -62,7 +65,9 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
 
     data$(collection_name: string): Observable<Buffer> {
         return new Observable((observer: Observer<Buffer>) => {
-            const extract = tar.extract();
+            const extract = tar.extract({
+                highWaterMark: this.assource.bulk_read_size
+            });
 
             const file_input_stream = this.createReadStream();
             const unzip = zlib.createGunzip(this.assource.gzip);
@@ -102,7 +107,9 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
 
     async transferable(): Promise<CollectionMetadata[]> {
         return new Observable((observer: Observer<PartialCollectionMetadata>) => {
-            const extract = tar.extract();
+            const extract = tar.extract({
+                highWaterMark: this.assource.bulk_read_size
+            });
 
             const file_input_stream = this.createReadStream();
             const unzip = zlib.createGunzip(this.assource.gzip);

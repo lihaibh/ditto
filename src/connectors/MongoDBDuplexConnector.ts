@@ -1,8 +1,7 @@
 
-import { MongoClient, Db, Collection } from "mongodb";
+import { MongoClient, Db, Collection, Cursor } from "mongodb";
 import { Observable, defer, EMPTY, from, concat, merge } from "rxjs";
 import { mergeAll, map, mergeMap, bufferCount, toArray } from 'rxjs/operators';
-import { streamToRx } from 'rxjs-stream';
 import * as joi from 'joi';
 import * as BSON from 'bson';
 
@@ -23,10 +22,12 @@ const schema = joi.object({
     }).required(),
     assource: joi.object({
         bulk_read_size: joi.number().optional(),
+        collections: joi.array().items(joi.string()).optional()
     }).required(),
     astarget: joi.object({
         remove_on_failure: joi.boolean().optional(),
         remove_on_startup: joi.boolean().optional(),
+        collections: joi.array().items(joi.string()).optional(),
         documents_bulk_write_count: joi.number().optional(),
     }).required(),
 });
@@ -71,14 +72,19 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
     // as source
     data$(collection_name: string) {
         return defer(async () => {
-            if (!this.db) {
+            if (!this.db || !this.collections) {
+                return EMPTY;
+            }
+
+            // check if collection exist
+            if (!this.collections.find(collection => collection.collectionName === collection_name)) {
                 return EMPTY;
             }
 
             const collection = this.db.collection(collection_name);
-            const data_stream = collection.find().batchSize(this.assource.bulk_read_size) as NodeJS.ReadableStream;
+            const data_cursor = collection.find<Buffer>({}, { timeout: false, batchSize: this.assource.bulk_read_size }).snapshot(true as any).stream();
 
-            return streamToRx(data_stream) as Observable<Buffer>
+            return cursorToObservalbe(data_cursor);
         }).pipe(
             mergeAll()
         )
@@ -187,8 +193,9 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
 
     async connect() {
         const client = new MongoClient(this.connection.uri, {
-            connectTimeoutMS: this.connection.connectTimeoutMS,
+            connectTimeoutMS: this.connection.connectTimeoutMS || 5000,
             raw: true,
+            keepAlive: true,
             useNewUrlParser: true,
             useUnifiedTopology: true,
         });
@@ -234,20 +241,6 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
                 return null;
             }
         }))).filter(notEmpty);
-    }
-
-    /**
-     * Get a stream of specific collection׳s documents from the database.
-     * 
-     * @param collection_name the name of the collection to fetch
-     * @param batchSize how many documents to fetch on each iteration
-     */
-    stream(collection_name: string, batchSize: number) {
-        if (!this.client?.isConnected() || !this.collections) {
-            throw new Error(`MongoDB client is not connected`);
-        }
-
-        return this.collections.find(collection => collection.collectionName === collection_name)?.find().batchSize(batchSize);
     }
 }
 
@@ -304,6 +297,20 @@ async function* getDocumentsGenerator(data$: Observable<Buffer>): AsyncGenerator
     }
 }
 
+function cursorToObservalbe<T>(cursor: Cursor<T>): Observable<T> {
+    return new Observable((observer) => {
+        cursor.forEach(
+            observer.next.bind(observer),
+            (err) => {
+                if (err) {
+                    observer.error(err);
+                } else {
+                    observer.complete();
+                }
+            });
+    })
+}
+
 interface CollectionDocument {
     raw: Buffer, obj: { [key: string]: any }
 }
@@ -314,6 +321,12 @@ interface AsSourceOptions {
      * The bigger the number is it will improve the performance as it will decrease the amount of reads from the database (less io consumption).
      */
     bulk_read_size: number;
+
+    /**
+    * collections to read from the mongodb database.
+    * If its empty, the filter is skipped, reading all the collections from the database.
+    */
+    collections?: string[];
 }
 
 interface AsTargetOptions {
@@ -327,6 +340,12 @@ interface AsTargetOptions {
      * It can help avoiding conflicts when trying to write data that already exist on the target connector.
      */
     remove_on_startup: boolean;
+
+    /**
+    * collections to write into the mongodb database.
+    * If its empty, the filter is skipped, writing all the collections from the source.
+    */
+    collections?: string[];
 
     /**
     * The amount of documents to write in each operation.
