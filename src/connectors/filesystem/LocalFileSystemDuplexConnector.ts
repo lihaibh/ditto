@@ -26,11 +26,13 @@ const schema = joi.object({
     }).required(),
     assource: joi.object({
         bulk_read_size: joi.number().optional(),
+        collections: joi.array().items(joi.string()).optional(),
         gzip: gzipSchema
     }).required(),
     astarget: joi.object({
         remove_on_failure: joi.boolean().optional(),
         remove_on_startup: joi.boolean().optional(),
+        collections: joi.array().items(joi.string()).optional(),
         gzip: gzipSchema,
         bulk_write_size: joi.number().optional()
     }).required(),
@@ -135,15 +137,21 @@ export interface LocalFileSystemConnection {
 
 interface AsSourceOptions {
     /**
-     * options to use when extracting data from the source file
-     */
-    gzip: GzipOpts,
-
-    /**
      * The amount of bytes to read (in bson format) from the file each time.
      * The bigger the number is it will improve the performance as it will decrease the amount of reads from the disk (less io consumption).
      */
     bulk_read_size: number;
+
+    /**
+    * collections to read from the file.
+    * If its empty, the filter is skipped, reading all the collections from the file.
+    */
+    collections?: string[];
+
+    /**
+     * options to use when extracting data from the source file
+     */
+    gzip: GzipOpts,
 }
 
 interface AsTargetOptions {
@@ -157,6 +165,12 @@ interface AsTargetOptions {
      * It can help avoiding conflicts when trying to write data that already exist on the target connector.
      */
     remove_on_startup: boolean;
+
+    /**
+    * collections to write into the file.
+    * If its empty, the filter is skipped, writing all the collections from the file.
+    */
+    collections?: string[];
 
     /**
      * options to use when compressing data into the target file

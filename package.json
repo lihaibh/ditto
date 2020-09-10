@@ -1,6 +1,6 @@
 {
   "name": "mongodb-snapshot",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Manages MongoDB snapshots, provides functionality to deliver MongoDB content between data sources for backup and restore",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -39,7 +39,6 @@
     "mongodb": "^3.5.8",
     "rxjs": "6.4.0",
     "rxjs-for-await": "^0.0.2",
-    "rxjs-stream": "^3.2.1",
     "tar-stream": "^2.1.2",
     "verror": "^1.10.0"
   }

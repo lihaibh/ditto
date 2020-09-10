@@ -45,6 +45,12 @@ export interface SourceConnector extends Connector {
          */
         bulk_read_size: number;
 
+        /**
+        * collections to read from the source connector.
+        * If its empty, the filter is skipped, reading all the collections from the source.
+        */
+        collections?: string[];
+
         // aditional properties
         [key: string]: any;
     }
@@ -77,6 +83,12 @@ export interface TargetConnector extends Connector {
          * It can help avoiding conflicts when trying to write data that already exist on the target connector.
          */
         remove_on_startup: boolean;
+
+        /**
+        * collections to write into the target connector.
+        * If its empty, the filter is skipped, writing all the collections from the source.
+        */
+        collections?: string[];
 
         // additional properties
         [key: string]: any;
