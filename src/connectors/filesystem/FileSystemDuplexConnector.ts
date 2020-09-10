@@ -23,7 +23,7 @@ interface PartialCollectionMetadata {
 
 export abstract class FileSystemDuplexConnector extends Validatable implements FileSystemSourceConnector, FileSystemTargetConnector {
 
-    write(collections: CollectionData[]) {
+    write(datas: CollectionData[], metadatas: CollectionMetadata[]) {
         return defer(() => {
             const pack = tar.pack({
                 highWaterMark: this.astarget.bulk_write_size,
@@ -33,8 +33,14 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
             const gzip = zlib.createGzip(this.astarget.gzip);
 
             // pack streams
-            const metadata$ = concat(...collections.map(({ metadata }) => packMetadata$(pack, metadata))).pipe(toArray(), map(() => 0));
-            const content$ = concat(...collections.map(({ metadata: { name, size }, data$: collectionData$ }) => packCollectionData$(pack, { name, size }, collectionData$)));
+            const metadata$ = concat(
+                ...metadatas.map((metadata) => packMetadata$(pack, metadata))
+            ).pipe(toArray(), map(() => 0));
+
+            const content$ = concat(
+                ...datas.map(({ metadata: { name, size }, data$: collectionData$ }) =>
+                    packCollectionData$(pack, { name, size }, collectionData$))
+            );
 
             // executing the stream
             const file_close_promise = fromEvent(
@@ -57,7 +63,6 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
                     return concat(ending$, throwError(err));
                 })
             );
-
 
             return concat(packing$, ending$);
         });

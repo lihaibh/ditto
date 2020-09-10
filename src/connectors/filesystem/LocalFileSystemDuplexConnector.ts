@@ -33,6 +33,7 @@ const schema = joi.object({
         remove_on_failure: joi.boolean().optional(),
         remove_on_startup: joi.boolean().optional(),
         collections: joi.array().items(joi.string()).optional(),
+        metadatas: joi.array().items(joi.string()).optional(),
         gzip: gzipSchema,
         bulk_write_size: joi.number().optional()
     }).required(),
@@ -168,9 +169,15 @@ interface AsTargetOptions {
 
     /**
     * collections to write into the file.
-    * If its empty, the filter is skipped, writing all the collections from the file.
+    * If its empty, the filter is skipped, writing all the collections from the source.
     */
     collections?: string[];
+
+    /**
+    * metadata of collections to write into the file.
+    * If its empty, the filter is skipped, writing all the metadatas from the source.
+    */
+    metadatas?: string[];
 
     /**
      * options to use when compressing data into the target file

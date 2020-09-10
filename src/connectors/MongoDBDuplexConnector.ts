@@ -28,6 +28,7 @@ const schema = joi.object({
         remove_on_failure: joi.boolean().optional(),
         remove_on_startup: joi.boolean().optional(),
         collections: joi.array().items(joi.string()).optional(),
+        metadatas: joi.array().items(joi.string()).optional(),
         documents_bulk_write_count: joi.number().optional(),
     }).required(),
 });
@@ -130,7 +131,12 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
             throw new Error("Need to connect to the data source before using this method.");
         }
 
-        return this.db.collection(metadata.name).createIndexes(metadata.indexes);
+        // create indexes
+        if (metadata.indexes.length > 0) {
+            return this.db.collection(metadata.name).createIndexes(metadata.indexes);
+        }
+
+        return Promise.resolve();
     }
 
     writeCollectionData(collection_name: string, data$: Observable<Buffer>): Observable<number> {
@@ -177,13 +183,14 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
             })
     }
 
-    write(collections: CollectionData[]): Observable<number> {
+    write(datas: CollectionData[], metadatas: CollectionMetadata[]): Observable<number> {
         return defer(() => {
-            const metadata$ = merge(...collections.map(({ metadata }) =>
-                from(this.writeCollectionMetadata(metadata))
-            )).pipe(toArray(), map(() => 0));
+            const metadata$ = merge(
+                ...metadatas.map((metadata) =>
+                    from(this.writeCollectionMetadata(metadata))
+                )).pipe(toArray(), map(() => 0));
 
-            const content$ = merge(...collections.map(({ metadata, data$ }) =>
+            const content$ = merge(...datas.map(({ metadata, data$ }) =>
                 this.writeCollectionData(metadata.name, data$))
             );
 
@@ -346,6 +353,12 @@ interface AsTargetOptions {
     * If its empty, the filter is skipped, writing all the collections from the source.
     */
     collections?: string[];
+
+    /**
+    * metadata of collections to write into mongodb.
+    * If its empty, the filter is skipped, writing metadata of all the collections.
+    */
+    metadatas?: string[];
 
     /**
     * The amount of documents to write in each operation.

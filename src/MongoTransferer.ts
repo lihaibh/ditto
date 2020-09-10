@@ -76,20 +76,24 @@ export class MongoTransferer implements AsyncIterable<Progress> {
       await Promise.all(connectors.map(connector => connector.validate()));
       await Promise.all(connectors.map(connector => connector.connect()));
 
-      const metadatas = (await this.source.transferable()).filter((metadata) => {
-        const filter_collections = this.source.assource.collections || [];
-
-        return (filter_collections.length > 0 && filter_collections.includes(metadata.name)) || (filter_collections.length === 0);
-      }).map(metadata => ({
-        ...metadata,
-        indexes: (metadata.indexes || []).map(index => omit(index, ['ns']))
-      }));
+      const metadatas = (await this.source.transferable())
+        .map(metadata => ({
+          ...metadata,
+          indexes: (metadata.indexes || []).map(index => omit(index, ['ns']))
+        }));
 
       const datas =
-        metadatas.map(metadata => ({
-          data$: this.source.data$(metadata.name),
-          metadata
-        }));
+        metadatas
+          .filter((metadata) =>
+            (
+              this.source.assource.collections &&
+              this.source.assource.collections.includes(metadata.name)
+            ) || (!this.source.assource.collections)
+          )
+          .map(metadata => ({
+            data$: this.source.data$(metadata.name),
+            metadata
+          }));
 
       // cleanup all the targets before creating and writing data into them
       await Promise.all(
@@ -103,15 +107,23 @@ export class MongoTransferer implements AsyncIterable<Progress> {
       );
 
       const writes = this.targets.map(target => {
-        const collections = datas.filter(({ metadata: { name } }) => {
-          const filter_collections = target.astarget.collections || [];
+        const target_collections = datas.filter(({ metadata: { name } }) =>
+          (
+            target.astarget.collections &&
+            target.astarget.collections.includes(name)
+          ) || (!target.astarget.collections)
+        );
 
-          return (filter_collections.length > 0 && filter_collections.includes(name)) || (filter_collections.length === 0);
-        });
+        const target_metadatas = metadatas.filter(({ name }) =>
+          (
+            target.astarget.metadatas &&
+            target.astarget.metadatas.includes(name)
+          ) || (!target.astarget.metadatas)
+        );
 
         return {
-          size: collections.reduce((total, { metadata: { size } }) => total + size, 0),
-          write$: collections.length === 0 ? EMPTY : target.write(collections).pipe(
+          size: target_collections.reduce((total, { metadata: { size } }) => total + size, 0),
+          write$: target.write(target_collections, target_metadatas).pipe(
             catchError((error) => {
               return defer(async () => {
                 console.error(`could not write collection data into: ${await target.fullname()} due to error:`);
