@@ -90,6 +90,12 @@ export interface TargetConnector extends Connector {
         */
         collections?: string[];
 
+        /**
+         * metadata of collections to write into the target connector.
+         * If its empty, the filter is skipped, writing metadata of all the collections.
+         */
+        metadatas?: string[];
+
         // additional properties
         [key: string]: any;
     }
@@ -100,12 +106,15 @@ export interface TargetConnector extends Connector {
     remove(): Promise<boolean>;
 
     /**
-     * write the collections data and metadata into the data source object.
-     * emmits the amount of data written to the data source object.
-     * 
-     * @return a stream of amount of data written to the data source object.
-     */
-    write(collections: CollectionData[]): Observable<number>;
+    * write the collections data and metadata into the data source object.
+    * emmits the amount of data written to the data source object.
+    * 
+    * @param datas the collection data to write into the target connector.
+    * @param metadatas the metadata to write into the target connector.
+    * 
+    * @return a stream of amount of data written to the data source object
+    */
+    write(datas: CollectionData[], metadatas: CollectionMetadata[]): Observable<number>;
 }
 
 export interface CollectionData {
