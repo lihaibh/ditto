@@ -22,8 +22,11 @@ export interface MongoDBConnection {
 }
 
 export interface CollectionMetadata {
+  /* the name of the collection */
   name: string;
+  /* The size in bytes of a collection */
   size: number;
+  /* A list of indexes that were created */
   indexes: any[];
 }
 

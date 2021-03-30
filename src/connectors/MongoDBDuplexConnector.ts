@@ -71,7 +71,9 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
     }
 
     // as source
-    data$(collection_name: string) {
+    chunk$({
+        name: collection_name,
+    }: CollectionMetadata) {
         return defer(async () => {
             if (!this.db || !this.collections) {
                 return EMPTY;
@@ -82,10 +84,22 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
                 return EMPTY;
             }
 
-            const collection = this.db.collection(collection_name);
-            const data_cursor = collection.find<Buffer>({}, { timeout: false, batchSize: this.assource.bulk_read_size }).stream();
+            const adminDb = this.db.admin();
 
-            return cursorToObservalbe(data_cursor);
+            const { version } = await adminDb.serverStatus();
+
+            let majorVersion = version.split('.')[0];
+
+            majorVersion = majorVersion && Number(majorVersion);
+
+            const collection = this.db.collection(collection_name);
+            let chunkCursor = collection.find<Buffer>({}, { timeout: false, batchSize: this.assource.bulk_read_size });
+
+            if (majorVersion < 4) {
+                chunkCursor = chunkCursor.snapshot(true as any);
+            }
+
+            return cursorToObservalbe(chunkCursor);
         }).pipe(
             mergeAll()
         )
@@ -139,8 +153,8 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
         return Promise.resolve();
     }
 
-    writeCollectionData(collection_name: string, data$: Observable<Buffer>): Observable<number> {
-        const documents$ = convertAsyncGeneratorToObservable(getDocumentsGenerator(data$));
+    writeCollectionData(collection_name: string, chunk$: Observable<Buffer>): Observable<number> {
+        const documents$ = convertAsyncGeneratorToObservable(getDocumentsGenerator(chunk$));
 
         return documents$.pipe(
             bufferCount(this.astarget.documents_bulk_write_count),
@@ -190,8 +204,8 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
                     from(this.writeCollectionMetadata(metadata))
                 )).pipe(toArray(), map(() => 0));
 
-            const content$ = merge(...datas.map(({ metadata, data$ }) =>
-                this.writeCollectionData(metadata.name, data$))
+            const content$ = merge(...datas.map(({ metadata, chunk$ }) =>
+                this.writeCollectionData(metadata.name, chunk$))
             );
 
             return concat(metadata$, content$);
@@ -239,6 +253,7 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
                 return {
                     name: collection.collectionName,
                     size: stats.size,
+                    count: stats.count,
                     indexes,
                 };
             }
@@ -269,10 +284,10 @@ function filterInvalidKeys(obj: { [key: string]: any }, filterKeyFn: (key: strin
     }
 }
 
-async function* getDocumentsGenerator(data$: Observable<Buffer>): AsyncGenerator<CollectionDocument> {
+async function* getDocumentsGenerator(chunk$: Observable<Buffer>): AsyncGenerator<CollectionDocument> {
     let buffer = Buffer.alloc(0);
 
-    for await (const data of eachValueFrom(data$)) {
+    for await (const data of eachValueFrom(chunk$)) {
         buffer = Buffer.concat([buffer, data]);
 
         let next_doclen = null;

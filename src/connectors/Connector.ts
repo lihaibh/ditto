@@ -63,9 +63,9 @@ export interface SourceConnector extends Connector {
     /**
      * get stream of documents from the object inside the data source
      * 
-     * @param collection_name the collection name from the source object
+     * @param metadata the collection׳s metadata from the source object
      */
-    data$(collection_name: string): Observable<Buffer>;
+    chunk$(metadata: CollectionMetadata): Observable<Buffer>;
 }
 
 export interface TargetConnector extends Connector {
@@ -118,6 +118,6 @@ export interface TargetConnector extends Connector {
 }
 
 export interface CollectionData {
-    data$: Observable<Buffer>;
+    chunk$: Observable<Buffer>;
     metadata: CollectionMetadata;
 }
