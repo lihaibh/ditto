@@ -23,7 +23,7 @@
     "@types/lodash": "^4.14.155",
     "@types/mongodb": "^3.5.20",
     "@types/node": "^14.0.13",
-    "@types/tar-stream": "^2.2.0",
+    "@types/tar-stream": "^2.1.0",
     "@types/verror": "^1.10.4",
     "ts-node": "^8.10.2",
     "typescript": "^3.9.5"
