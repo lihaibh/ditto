@@ -93,7 +93,7 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
             majorVersion = majorVersion && Number(majorVersion);
 
             const collection = this.db.collection(collection_name);
-            let chunkCursor = collection.find<Buffer>({}, { timeout: false, batchSize: this.assource.bulk_read_size });
+            let chunkCursor = collection.find<Buffer>({}, { batchSize: this.assource.bulk_read_size });
 
             if (majorVersion < 4) {
                 chunkCursor = chunkCursor.snapshot(true as any);
