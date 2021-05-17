@@ -83,7 +83,7 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
             }
 
             const collection = this.db.collection(collection_name);
-            const data_cursor = collection.find<Buffer>({}, { timeout: false, batchSize: this.assource.bulk_read_size }).stream();
+            const data_cursor = collection.find<Buffer>({}, { batchSize: this.assource.bulk_read_size }).stream();
 
             return cursorToObservalbe(data_cursor);
         }).pipe(
