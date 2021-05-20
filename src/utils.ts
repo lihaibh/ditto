@@ -13,3 +13,15 @@ export function convertAsyncGeneratorToObservable<T>(iterator: AsyncGenerator<T>
         }
     })())
 }
+
+export function hasRegexesMatch(regexes: string[] | undefined, name: string) {
+    return regexes?.find(reg => hasRegexMatch(reg, name)) !== undefined;
+}
+
+export function hasRegexMatch(reg: string, name: string) {
+    try {
+        return (new RegExp(`^${reg}$`, 'g')).exec(name)?.[0] === name;
+    } catch (err) {
+        return false;
+    }
+}

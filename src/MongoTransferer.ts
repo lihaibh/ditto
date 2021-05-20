@@ -5,6 +5,7 @@ import { eachValueFrom } from "rxjs-for-await";
 
 import { SourceConnector, TargetConnector } from "./connectors/Connector";
 import { Progress } from "./contracts";
+import { hasRegexesMatch } from './utils';
 
 interface MongoTransfererOptions {
   source: SourceConnector;
@@ -46,7 +47,7 @@ export class MongoTransferer implements AsyncIterable<Progress> {
    * ```
    */
   iterator() {
-    return eachValueFrom(this.transfer$());
+    return eachValueFrom(this.progress$());
   }
 
   /**
@@ -55,13 +56,13 @@ export class MongoTransferer implements AsyncIterable<Progress> {
    * If the promise was fullfilled it will provide a summary details of the transfer operation.
    */
   async promise() {
-    return this.transfer$().toPromise();
+    return this.progress$().toPromise();
   }
 
   /**
    * Returns a stream transferer progression events to listen to during the transfer process.
    */
-  transfer$(): Observable<Progress> {
+  progress$(): Observable<Progress> {
     return defer(async () => {
       const connectors = [this.source, ...this.targets];
 
@@ -85,10 +86,8 @@ export class MongoTransferer implements AsyncIterable<Progress> {
       const datas =
         metadatas
           .filter((metadata) =>
-            (
-              this.source.assource.collections &&
-              this.source.assource.collections.includes(metadata.name)
-            ) || (!this.source.assource.collections)
+            (hasRegexesMatch(this.source.assource.collections, metadata.name) || !this.source.assource.collection) &&
+            !hasRegexesMatch(this.source.assource.exclude_collections, metadata.name)
           )
           .map(metadata => ({
             chunk$: this.source.chunk$(metadata),
@@ -108,17 +107,13 @@ export class MongoTransferer implements AsyncIterable<Progress> {
 
       const writes = this.targets.map(target => {
         const target_collections = datas.filter(({ metadata: { name } }) =>
-          (
-            target.astarget.collections &&
-            target.astarget.collections.includes(name)
-          ) || (!target.astarget.collections)
+          (hasRegexesMatch(target.astarget.collections, name) || !target.astarget.collections) &&
+          !hasRegexesMatch(target.astarget.exclude_collections, name)
         );
 
         const target_metadatas = metadatas.filter(({ name }) =>
-          (
-            target.astarget.metadatas &&
-            target.astarget.metadatas.includes(name)
-          ) || (!target.astarget.metadatas)
+          (hasRegexesMatch(target.astarget.metadatas, name) || !target.astarget.metadatas) &&
+          !hasRegexesMatch(target.astarget.exclude_metadatas, name)
         );
 
         return {
@@ -167,3 +162,4 @@ export class MongoTransferer implements AsyncIterable<Progress> {
     );
   }
 }
+
