@@ -2,10 +2,11 @@ import { TargetConnector, SourceConnector, CollectionData } from "../Connector";
 import { Readable, Writable } from "stream";
 import { GzipOpts, CollectionMetadata } from "../../contracts";
 import { Observable, Observer, concat, ReplaySubject, defer, fromEvent, throwError } from "rxjs";
-import { groupBy, concatMap, toArray, map, take, catchError, scan, filter, share, last, switchMap } from 'rxjs/operators';
+import { groupBy, concatMap, toArray, map, take, catchError, scan, filter, share, takeLast, switchMap } from 'rxjs/operators';
 import * as tar from "tar-stream";
 import * as zlib from "zlib";
 import { Validatable } from "../Validatable";
+import { VError } from 'verror';
 
 export interface FileSystemSourceConnector extends SourceConnector {
     createReadStream(): Readable;
@@ -39,7 +40,12 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
 
             const content$ = concat(
                 ...datas.map(({ metadata: { name, size }, chunk$: collectionData$ }) =>
-                    packCollectionData$(pack, { name, size }, this.astarget.bulk_write_size, collectionData$))
+                    packCollectionData$(pack, { name, size }, this.astarget.bulk_write_size, collectionData$)
+                        .pipe(catchError((err) =>
+                            throwError(new VError(err, `pack collection: ${name} failed`))
+                        ))
+                )
+
             );
 
             // executing the stream
@@ -219,12 +225,7 @@ function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: num
     chunk$: Observable<Buffer>): Observable<number> {
 
     return new Observable((observer: Observer<number>) => {
-        const trimmed$ = getTrimmedChunk$({
-            chunk$,
-            totalBytes: metadata.size
-        }).pipe(
-            share()
-        );
+        let streamError: Error | null = null;
 
         /* 
         * the data might be bigger or smaller than the metadata size by this point.
@@ -233,9 +234,16 @@ function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: num
         * it is necessary to create a stream of empty chunks if the actual data stream is smaller than the metadata size
         * and trimming the stream of data if it is bigger than the metadata size.
         */
+        const trimmed$ = getTrimmedChunk$({
+            chunk$,
+            totalBytes: metadata.size
+        }).pipe(
+            share()
+        );
+
         const content$ = trimmed$.pipe(map(({ chunk }) => chunk)) as Observable<Buffer>;
         const remain$ = trimmed$.pipe(
-            last(),
+            takeLast(1),
             switchMap(({
                 totalBytes
             }) =>
@@ -248,7 +256,9 @@ function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: num
         const write$ = concat(content$, remain$);
 
         const entry = pack.entry({ name: `${metadata.name}.bson`, size: metadata.size }, (error) => {
-            if (error) {
+            if (streamError) {
+                observer.error(streamError);
+            } else if (error) {
                 observer.error(error);
             } else {
                 observer.complete();
@@ -272,6 +282,8 @@ function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: num
                 observer.next(chunk);
             },
             (error) => {
+                streamError = error;
+
                 entry.end();
             }, () => {
                 entry.end();

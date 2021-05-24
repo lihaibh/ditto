@@ -101,7 +101,7 @@ interface CollectionDocument {
     raw: Buffer, obj: { [key: string]: any }
 }
 export class MongoDBDuplexConnector extends Validatable implements SourceConnector, TargetConnector {
-    type = 'mongodb';
+    type = 'MongoDB Connector';
 
     // options
     assource: AsSourceMongoDBOptions;

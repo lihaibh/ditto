@@ -71,7 +71,7 @@ type AsLocalFileSystemTargetOptions = TargetConnectorBaseOptions & {
 }
 
 export class LocalFileSystemDuplexConnector extends FileSystemDuplexConnector {
-    type = 'local';
+    type = 'Local FileSystem Connector';
 
     // options
     connection: LocalFileSystemConnection;
