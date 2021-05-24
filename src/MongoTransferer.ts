@@ -91,7 +91,7 @@ export class MongoTransferer implements AsyncIterable<Progress> {
             ) || (!this.source.assource.collections)
           )
           .map(metadata => ({
-            data$: this.source.data$(metadata.name),
+            chunk$: this.source.chunk$(metadata),
             metadata
           }));
 

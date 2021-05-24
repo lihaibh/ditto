@@ -2,7 +2,7 @@ import { TargetConnector, SourceConnector, CollectionData } from "../Connector";
 import { Readable, Writable } from "stream";
 import { GzipOpts, CollectionMetadata } from "../../contracts";
 import { Observable, Observer, concat, ReplaySubject, defer, fromEvent, throwError } from "rxjs";
-import { groupBy, concatMap, toArray, map, take, catchError } from 'rxjs/operators';
+import { groupBy, concatMap, toArray, map, take, catchError, scan, filter, share, last, switchMap } from 'rxjs/operators';
 import * as tar from "tar-stream";
 import * as zlib from "zlib";
 import { Validatable } from "../Validatable";
@@ -38,8 +38,8 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
             ).pipe(toArray(), map(() => 0));
 
             const content$ = concat(
-                ...datas.map(({ metadata: { name, size }, data$: collectionData$ }) =>
-                    packCollectionData$(pack, { name, size }, collectionData$))
+                ...datas.map(({ metadata: { name, size }, chunk$: collectionData$ }) =>
+                    packCollectionData$(pack, { name, size }, this.astarget.bulk_write_size, collectionData$))
             );
 
             // executing the stream
@@ -68,7 +68,9 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
         });
     }
 
-    data$(collection_name: string): Observable<Buffer> {
+    chunk$({
+        name: collection_name
+    }: CollectionMetadata): Observable<Buffer> {
         return new Observable((observer: Observer<Buffer>) => {
             const extract = tar.extract({
                 highWaterMark: this.assource.bulk_read_size
@@ -77,7 +79,7 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
             const file_input_stream = this.createReadStream();
             const unzip = zlib.createGunzip(this.assource.gzip);
 
-            extract.on('entry', ({ size, name }, source_stream, next) => {
+            extract.on('entry', ({ name }, source_stream, next) => {
                 if (!name.endsWith('.bson')) {
                     // skipping
                     source_stream.resume();
@@ -148,7 +150,7 @@ export abstract class FileSystemDuplexConnector extends Validatable implements F
 
                     observer.next({
                         name: collection_name,
-                        indexes
+                        indexes,
                     });
 
                     next();
@@ -212,9 +214,38 @@ function packMetadata$(pack: tar.Pack, metadata: CollectionMetadata): Observable
     });
 }
 
-function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: number }, data$: Observable<Buffer>): Observable<number> {
+function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: number },
+    fillEmptyChunkSize: number,
+    chunk$: Observable<Buffer>): Observable<number> {
 
     return new Observable((observer: Observer<number>) => {
+        const trimmed$ = getTrimmedChunk$({
+            chunk$,
+            totalBytes: metadata.size
+        }).pipe(
+            share()
+        );
+
+        /* 
+        * the data might be bigger or smaller than the metadata size by this point.
+        * This is because collections can be altered during the packing process (insert / remove / modifying documents).
+        * so in order to perfectly fill the collection backup file with the right amount of data,
+        * it is necessary to create a stream of empty chunks if the actual data stream is smaller than the metadata size
+        * and trimming the stream of data if it is bigger than the metadata size.
+        */
+        const content$ = trimmed$.pipe(map(({ chunk }) => chunk)) as Observable<Buffer>;
+        const remain$ = trimmed$.pipe(
+            last(),
+            switchMap(({
+                totalBytes
+            }) =>
+                getEmptyChunk$({
+                    chunkSize: fillEmptyChunkSize,
+                    totalBytes: metadata.size - totalBytes
+                })
+            )
+        )
+        const write$ = concat(content$, remain$);
 
         const entry = pack.entry({ name: `${metadata.name}.bson`, size: metadata.size }, (error) => {
             if (error) {
@@ -224,7 +255,7 @@ function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: num
             }
         });
 
-        const subscription = data$.pipe(
+        const subscription = write$.pipe(
             concatMap(async (data) => {
                 return await new Promise<number>((resolve, reject) => {
                     entry.write(data, (error) => {
@@ -237,7 +268,9 @@ function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: num
                 })
             })
         ).subscribe(
-            observer.next.bind(observer),
+            (chunk) => {
+                observer.next(chunk);
+            },
             (error) => {
                 entry.end();
             }, () => {
@@ -247,5 +280,73 @@ function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: num
         return () => {
             subscription.unsubscribe();
         }
+    });
+}
+
+function getTrimmedChunk$(opts: {
+    chunk$: Observable<Buffer>,
+    totalBytes: number,
+}) {
+    return opts.chunk$.pipe(
+        // cutting extra data from the stream
+        scan<Buffer, { totalBytes: number, chunk?: Buffer }>(
+            (acc, chunk) => {
+                const remainingBytes = opts.totalBytes - acc.totalBytes;
+
+                if (remainingBytes > 0) {
+                    if (chunk.length < remainingBytes) {
+                        return {
+                            chunk,
+                            totalBytes: acc.totalBytes + chunk.length
+                        }
+                    } else {
+                        return {
+                            chunk: chunk.slice(0, remainingBytes),
+                            totalBytes: opts.totalBytes
+                        }
+                    }
+                } else {
+                    return {
+                        totalBytes: opts.totalBytes
+                    }
+                }
+
+            },
+            {
+                totalBytes: 0,
+            }
+        ),
+        filter(({
+            totalBytes,
+            chunk
+        }) => {
+            return totalBytes > 0 && chunk !== undefined
+        })
+    )
+}
+
+function getEmptyChunk$(opts: {
+    totalBytes: number,
+    chunkSize: number,
+}) {
+    // check remaining bytes
+    let remainingBytes = opts.totalBytes;
+
+    return new Observable<Buffer>((observer) => {
+        const totalChunks = Math.floor(opts.totalBytes / opts.chunkSize);
+
+        for (let i = 0; i < totalChunks; i++) {
+            observer.next(Buffer.alloc(opts.chunkSize));
+
+            remainingBytes -= opts.chunkSize;
+        }
+
+        if (remainingBytes > 0) {
+            observer.next(Buffer.alloc(remainingBytes));
+
+            remainingBytes = 0;
+        }
+
+        observer.complete();
     });
 }
