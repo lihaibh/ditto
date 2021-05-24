@@ -1,35 +1,44 @@
 
-import { MongoClient, Db, Collection, Cursor } from "mongodb";
+import { MongoClient, Db, Collection, Cursor, FilterQuery } from "mongodb";
 import { Observable, defer, EMPTY, from, concat, merge } from "rxjs";
-import { mergeAll, map, mergeMap, bufferCount, toArray } from 'rxjs/operators';
+import { mergeAll, map, mergeMap, bufferCount, toArray, filter } from 'rxjs/operators';
 import * as joi from 'joi';
 import * as BSON from 'bson';
 
-import { TargetConnector, SourceConnector, CollectionData } from "./Connector";
-import { MongoDBConnection, CollectionMetadata as CollectionMetadata } from "../contracts";
-import { Validatable } from "./Validatable";
-import { pick, merge as loMerge } from "lodash";
+import { TargetConnector, SourceConnector, CollectionData, Schema, SOURCE_CONNECTOR_BASE_OPTIONS_SCHEMA, TARGET_CONNECTOR_BASE_OPTIONS_SCHEMA, SourceConnectorBaseOptions, TargetConnectorBaseOptions } from '../Connector';
+import { MongoDBConnection, CollectionMetadata as CollectionMetadata } from "../../contracts";
+import { Validatable } from "../Validatable";
+import { pick, merge as loMerge, isString, isArray, isFunction, pickBy } from "lodash";
 import { eachValueFrom } from "rxjs-for-await";
-import { convertAsyncGeneratorToObservable } from "../utils";
+import { convertAsyncGeneratorToObservable, hasRegexMatch } from '../../utils';
 
 const BSON_DOC_HEADER_SIZE = 4;
 
-const schema = joi.object({
-    connection: joi.object({
+const documentFilterSchema = joi.alternatives().try([
+    joi.string(),
+    joi.func()
+]).required();
+
+const schema = joi.object(<Schema<MongoDBConnectorOptions>>{
+    connection: joi.object(<Schema<MongoDBConnection>>{
         uri: joi.string().required(),
         dbname: joi.string().required(),
         connectTimeoutMS: joi.number().optional()
     }).required(),
-    assource: joi.object({
-        bulk_read_size: joi.number().optional(),
-        collections: joi.array().items(joi.string()).optional()
+    assource: joi.object(<Schema<AsSourceMongoDBOptions>>{
+        ...SOURCE_CONNECTOR_BASE_OPTIONS_SCHEMA,
     }).required(),
-    astarget: joi.object({
-        remove_on_failure: joi.boolean().optional(),
-        remove_on_startup: joi.boolean().optional(),
-        collections: joi.array().items(joi.string()).optional(),
-        metadatas: joi.array().items(joi.string()).optional(),
+    astarget: joi.object(<Schema<AsTargetMongoDBOptions>>{
+        ...TARGET_CONNECTOR_BASE_OPTIONS_SCHEMA,
         documents_bulk_write_count: joi.number().optional(),
+        upsert: joi.object().pattern(
+            joi.string(),
+            joi.alternatives(
+                documentFilterSchema,
+                joi.array().items(documentFilterSchema)
+            )
+        ).optional(),
+        writeDocument: joi.func().optional()
     }).required(),
 });
 
@@ -39,21 +48,66 @@ export interface MongoDBConnectorOptions {
     /**
      * data related to this connector as a source
      */
-    assource?: Partial<AsSourceOptions>;
+    assource?: Partial<AsSourceMongoDBOptions>;
 
     /**
      * data related to this connector as a target
      */
-    astarget?: Partial<AsTargetOptions>;
+    astarget?: Partial<AsTargetMongoDBOptions>;
 }
 
+type AsSourceMongoDBOptions = SourceConnectorBaseOptions;
+type AsTargetMongoDBOptions = TargetConnectorBaseOptions & {
+    /**
+    * The amount of documents to write in each operation.
+    * The greater this number is the better performance it will provide as it will make less writes to the MongoDB server.
+    */
+    documents_bulk_write_count: number;
+
+    /**
+    * insert or update exist documents on the target connector, overriding them by searching specific fields.
+    * the upsert options is a dictionary representation of a collection selector to a document filter.
+    * The collection selector can either be a regular expression or the literal name of the collection.
+    * The document filter can be the literal name or regex of the field / fields or a function to perform the search of an exist document by (it is recommended to use something that compose a unique key).
+    * @example
+    * ```
+    * {
+    *   ...
+    *   upsert: {
+    *       "prefix_.*_suffix": (document) => pick(document, ['p1', 'p2', 'p3']),
+    *       "collection_0": (document) => ({ p1: 'p1', p2: { $gte: 0 }}),
+    *       "collection_1": ['p1', 'p2', 'p3'],
+    *       "collection_2": ['p.*'],
+    *       ".*": "_id"
+    *   }
+    * }
+    * ```
+    */
+    upsert?: {
+        [collection: string]: DocumentFilter | DocumentFilter[];
+    };
+
+    /**
+     * allows you to filter specific documents to write into the target connector.
+     * if this function returns true, the document will be written to the target connector.
+     */
+    writeDocument?: (collection: string, document: any) => boolean;
+}
+
+type DocumentFilterFunction<D = any> = (doc: D) => FilterQuery<D>;
+type DocumentFilter = string | DocumentFilterFunction;
+
+interface CollectionDocument {
+    raw: Buffer, obj: { [key: string]: any }
+}
 export class MongoDBDuplexConnector extends Validatable implements SourceConnector, TargetConnector {
-    type = 'mongodb';
+    type = 'MongoDB Connector';
 
     // options
+    assource: AsSourceMongoDBOptions;
+    astarget: AsTargetMongoDBOptions;
+
     connection: MongoDBConnection;
-    assource: AsSourceOptions;
-    astarget: AsTargetOptions;
 
     // session data (after successful connection)
     private client?: MongoClient;
@@ -66,8 +120,7 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
         this.connection = connection;
 
         this.assource = loMerge({ bulk_read_size: 50 * 1024 }, assource);
-
-        this.astarget = loMerge({ remove_on_failure: true, remove_on_startup: true, documents_bulk_write_count: 1000 }, astarget);
+        this.astarget = loMerge({ remove_on_failure: false, remove_on_startup: false, documents_bulk_write_count: 1000 }, astarget);
     }
 
     // as source
@@ -154,13 +207,17 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
     }
 
     writeCollectionData(collection_name: string, chunk$: Observable<Buffer>): Observable<number> {
-        const documents$ = convertAsyncGeneratorToObservable(getDocumentsGenerator(chunk$));
+        const documents$ = convertAsyncGeneratorToObservable(getDocumentsGenerator(chunk$))
+            .pipe(filter(({ obj: document }) => {
+                // filter documents to write into mongodb
+                return this.astarget.writeDocument ? this.astarget.writeDocument(collection_name, document) : true
+            }));
 
         return documents$.pipe(
             bufferCount(this.astarget.documents_bulk_write_count),
             mergeMap(async (documents: CollectionDocument[]) => {
                 if (documents.length > 0) {
-                    await this.insertCollectionDocuments(collection_name, documents as [CollectionDocument]);
+                    await this.writeCollectionDocuments(collection_name, documents as [CollectionDocument]);
                 }
 
 
@@ -169,18 +226,85 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
         );
     }
 
-    async insertCollectionDocuments(collection_name: string, documents: [CollectionDocument]) {
+    async writeCollectionDocuments(collectionName: string, documents: [CollectionDocument]) {
         if (!this.db) {
             throw new Error("Need to connect to the data source before using this method.");
         }
 
-        const collection = this.db.collection(collection_name);
+        const collection = this.db.collection(collectionName);
+        const upsert = this.astarget.upsert;
 
-        async function insert(documents: [CollectionDocument]) {
-            return await collection.bulkWrite(documents.map(({ obj: document }) => ({
-                insertOne: {
-                    document
+        const replaceFilter = Object.entries(upsert || {}).reduce((docFilterFn: (DocumentFilterFunction | undefined), [collectionSelector, collectionDocumentFilters]) => {
+            if (hasRegexMatch(collectionSelector, collectionName)) {
+                collectionDocumentFilters = (!isArray(collectionDocumentFilters)) ? [collectionDocumentFilters] : collectionDocumentFilters;
+
+                const currCollectionDocumentFilterFn = collectionDocumentFilters.reduce<DocumentFilterFunction | undefined>((collectionDocumentFilterFn, filter) => {
+                    let documentFilterFn: DocumentFilterFunction | undefined = undefined;
+
+                    if (isFunction(filter)) {
+                        documentFilterFn = filter;
+                    } else if (isString(filter)) {
+                        documentFilterFn = (document: object) => {
+                            return pickBy(document, (value, property) => {
+                                return hasRegexMatch(filter, property);
+                            }) as DocumentFilterFunction;
+                        };
+                    }
+
+                    if (documentFilterFn) {
+                        return (document) => {
+                            if (collectionDocumentFilterFn) {
+                                // merge results of filters
+                                return <FilterQuery<any>>{
+                                    $and: [
+                                        collectionDocumentFilterFn(document),
+                                        (documentFilterFn as DocumentFilterFunction)(document)
+                                    ]
+                                }
+                            }
+
+                            return (documentFilterFn as DocumentFilterFunction)(document);
+                        }
+                    }
+
+                    return collectionDocumentFilterFn;
+                }, undefined);
+
+                if (currCollectionDocumentFilterFn) {
+                    return (document) => {
+                        if (docFilterFn) {
+                            return <FilterQuery<any>>{
+                                $or: [
+                                    docFilterFn(document),
+                                    (currCollectionDocumentFilterFn as DocumentFilterFunction)(document)
+                                ]
+                            }
+                        }
+
+                        return (currCollectionDocumentFilterFn as DocumentFilterFunction)(document);
+                    }
                 }
+            }
+
+            return docFilterFn;
+        }, undefined);
+
+        async function write(documents: [CollectionDocument]) {
+            return await collection.bulkWrite(documents.map(({ obj: document }) => ({
+
+                // either replacing or inserting new document for each income document 
+                ...(replaceFilter ? ({
+                    replaceOne: {
+                        upsert: true,
+                        replacement: document,
+                        filter: replaceFilter(document),
+                    }
+                }) : ({
+                    insertOne: {
+                        document
+                    }
+                })),
+
             }),
                 {
                     ordered: false,
@@ -189,11 +313,12 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
             ))
         }
 
-        return await insert(documents)
+        return write(documents)
             .catch(async function () {
+                // there sometimes failures during insertions because documents contain properties with invalid key names (containing the ".")
                 documents.forEach(({ obj: document }) => filterInvalidKeys(document, key => key && key.includes('.')));
 
-                return await insert(documents);
+                return write(documents);
             })
     }
 
@@ -331,53 +456,4 @@ function cursorToObservalbe<T>(cursor: Cursor<T>): Observable<T> {
                 }
             });
     })
-}
-
-interface CollectionDocument {
-    raw: Buffer, obj: { [key: string]: any }
-}
-
-interface AsSourceOptions {
-    /**
-     * The amount of bytes to read (in bson format) from mongodb database each time.
-     * The bigger the number is it will improve the performance as it will decrease the amount of reads from the database (less io consumption).
-     */
-    bulk_read_size: number;
-
-    /**
-    * collections to read from the mongodb database.
-    * If its empty, the filter is skipped, reading all the collections from the database.
-    */
-    collections?: string[];
-}
-
-interface AsTargetOptions {
-    /**
-    * Whether or not to remove the target object in case of an error.
-    */
-    remove_on_failure: boolean;
-
-    /**
-     * Whether or not to remove the target object if its exist before transfering content to it.
-     * It can help avoiding conflicts when trying to write data that already exist on the target connector.
-     */
-    remove_on_startup: boolean;
-
-    /**
-    * collections to write into the mongodb database.
-    * If its empty, the filter is skipped, writing all the collections from the source.
-    */
-    collections?: string[];
-
-    /**
-    * metadata of collections to write into mongodb.
-    * If its empty, the filter is skipped, writing metadata of all the collections.
-    */
-    metadatas?: string[];
-
-    /**
-    * The amount of documents to write in each operation.
-    * The greater this number is the better performance it will provide as it will make less writes to the MongoDB server.
-    */
-    documents_bulk_write_count: number;
 }

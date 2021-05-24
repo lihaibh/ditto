@@ -6,6 +6,7 @@ import * as zlib from 'zlib';
 
 import { FileSystemDuplexConnector } from "./FileSystemDuplexConnector";
 import { GzipOpts } from "../../contracts";
+import { TargetConnectorBaseOptions, SourceConnectorBaseOptions, SOURCE_CONNECTOR_BASE_OPTIONS_SCHEMA, TARGET_CONNECTOR_BASE_OPTIONS_SCHEMA } from '../Connector';
 
 const accessP = promisify(access);
 const unlinkP = promisify(unlink);
@@ -25,19 +26,14 @@ const schema = joi.object({
         path: joi.string().required()
     }).required(),
     assource: joi.object({
-        bulk_read_size: joi.number().optional(),
-        collections: joi.array().items(joi.string()).optional(),
+        ...SOURCE_CONNECTOR_BASE_OPTIONS_SCHEMA,
         gzip: gzipSchema
     }).required(),
     astarget: joi.object({
-        remove_on_failure: joi.boolean().optional(),
-        remove_on_startup: joi.boolean().optional(),
-        collections: joi.array().items(joi.string()).optional(),
-        metadatas: joi.array().items(joi.string()).optional(),
+        ...TARGET_CONNECTOR_BASE_OPTIONS_SCHEMA,
         gzip: gzipSchema,
         bulk_write_size: joi.number().optional()
     }).required(),
-
 });
 
 export interface LocalFileSystemOptions {
@@ -46,21 +42,41 @@ export interface LocalFileSystemOptions {
     /**
      * data related to this connector as a source
      */
-    assource?: Partial<AsSourceOptions>;
+    assource?: Partial<AsLocalFileSystemSourceOptions>;
 
     /**
      * data related to this connector as a target
      */
-    astarget?: Partial<AsTargetOptions>;
+    astarget?: Partial<AsLocalFileSystemTargetOptions>;
+}
+
+type AsLocalFileSystemSourceOptions = SourceConnectorBaseOptions & {
+    /**
+     * options to use when extracting data from the source file
+     */
+    gzip: GzipOpts,
+}
+
+type AsLocalFileSystemTargetOptions = TargetConnectorBaseOptions & {
+    /**
+     * options to use when compressing data into the target file
+     */
+    gzip: GzipOpts;
+
+    /**
+     * The amount of bytes to write into the file each time.
+     * The bigger the number is it will improve the performance as it will decrease the amount of writes to the disk.
+     */
+    bulk_write_size: number;
 }
 
 export class LocalFileSystemDuplexConnector extends FileSystemDuplexConnector {
-    type = 'local';
+    type = 'Local FileSystem Connector';
 
     // options
     connection: LocalFileSystemConnection;
-    assource: AsSourceOptions;
-    astarget: AsTargetOptions;
+    assource: AsLocalFileSystemSourceOptions;
+    astarget: AsLocalFileSystemTargetOptions;
 
     constructor({ connection, assource = {}, astarget = {} }: LocalFileSystemOptions) {
         super();
@@ -136,57 +152,3 @@ export interface LocalFileSystemConnection {
     path: string;
 }
 
-interface AsSourceOptions {
-    /**
-     * The amount of bytes to read (in bson format) from the file each time.
-     * The bigger the number is it will improve the performance as it will decrease the amount of reads from the disk (less io consumption).
-     */
-    bulk_read_size: number;
-
-    /**
-    * collections to read from the file.
-    * If its empty, the filter is skipped, reading all the collections from the file.
-    */
-    collections?: string[];
-
-    /**
-     * options to use when extracting data from the source file
-     */
-    gzip: GzipOpts,
-}
-
-interface AsTargetOptions {
-    /**
-    * Whether or not to remove the target object in case of an error.
-    */
-    remove_on_failure: boolean;
-
-    /**
-     * Whether or not to remove the target object if its exist before transfering content to it.
-     * It can help avoiding conflicts when trying to write data that already exist on the target connector.
-     */
-    remove_on_startup: boolean;
-
-    /**
-    * collections to write into the file.
-    * If its empty, the filter is skipped, writing all the collections from the source.
-    */
-    collections?: string[];
-
-    /**
-    * metadata of collections to write into the file.
-    * If its empty, the filter is skipped, writing all the metadatas from the source.
-    */
-    metadatas?: string[];
-
-    /**
-     * options to use when compressing data into the target file
-     */
-    gzip: GzipOpts;
-
-    /**
-     * The amount of bytes to write into the file each time.
-     * The bigger the number is it will improve the performance as it will decrease the amount of writes to the disk.
-     */
-    bulk_write_size: number;
-}
