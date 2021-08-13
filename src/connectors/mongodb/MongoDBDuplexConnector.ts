@@ -23,7 +23,8 @@ const schema = joi.object(<Schema<MongoDBConnectorOptions>>{
     connection: joi.object(<Schema<MongoDBConnection>>{
         uri: joi.string().required(),
         dbname: joi.string().required(),
-        connectTimeoutMS: joi.number().optional()
+        connectTimeoutMS: joi.number().optional(),
+        isAtlasFreeTier: joi.boolean().optional()
     }).required(),
     assource: joi.object(<Schema<AsSourceMongoDBOptions>>{
         ...SOURCE_CONNECTOR_BASE_OPTIONS_SCHEMA,
@@ -146,8 +147,10 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
             majorVersion = majorVersion && Number(majorVersion);
 
             const collection = this.db.collection(collection_name);
-            let chunkCursor = collection.find<Buffer>({}, { timeout: false, batchSize: this.assource.bulk_read_size });
 
+            // removes timeout property if in atlas free tier, since noTimeout cursors are forbidden (the property timeout cannot be set to any value)
+            let chunkCursor = collection.find<Buffer>({}, { timeout: this.connection.isAtlasFreeTier ? undefined : false, batchSize: this.assource.bulk_read_size });
+            
             if (majorVersion < 4) {
                 chunkCursor = chunkCursor.snapshot(true as any);
             }
@@ -200,6 +203,8 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
 
         // create indexes
         if (metadata.indexes.length > 0) {
+            // deletes v property from indexes metadata if in atlas free tier
+            this.connection.isAtlasFreeTier && metadata.indexes.forEach((i) => delete i.v)
             return this.db.collection(metadata.name).createIndexes(metadata.indexes);
         }
 

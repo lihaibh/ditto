@@ -16,9 +16,14 @@ export interface MongoDBConnection {
    */
   dbname: string;
   /**
-  * The time in milliseconds to attempt a connection before timing out.
-  */
+   * The time in milliseconds to attempt a connection before timing out.
+   */
   connectTimeoutMS?: number;
+
+  /**
+   * Disables cursor timeout property and index version metadata for MongoDB Atlas free tier use.
+   */
+  isAtlasFreeTier?: boolean;
 }
 
 export interface CollectionMetadata {
