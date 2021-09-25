@@ -388,7 +388,7 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
                 };
             }
             catch (e) {
-                console.warn(`ignoring collection: "${collection.collectionName}", as we couldnt receive details due to an error: ${e.message}`);
+                console.warn(`ignoring collection: "${collection.collectionName}", as we couldnt receive details due to an error: ${(e as any).message}`);
 
                 return null;
             }
