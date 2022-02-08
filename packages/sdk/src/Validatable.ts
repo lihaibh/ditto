@@ -1,6 +1,6 @@
 import * as joi from "joi";
 
-import { ConnectorSchemaError } from "../errors";
+import { ConnectorSchemaError } from "./errors";
 
 export abstract class Validatable {
     validate() {

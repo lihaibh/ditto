@@ -1,32 +1,43 @@
-# [mongodb-snapshot](https://github.com/lihaibh/mongodb-snapshot)
+# [ditto](https://github.com/lihaibh/ditto)
 
-Dump and restore MongoDB content between data sources.
+Dump and restore DB content between data sources.
 
 ## Installation
 ```sh
-npm install mongodb-snapshot
+npm install @ditto/core --save
 ```
 
+## Write your own connector
+If a connector is not implemented, it is very simple to write your own using @ditto/sdk to solve common connector problems.
+If your connector can be used by others, I advise you to publish it as a package to ditto repository.
+
 ## Usage
+choose the dest & target you wish to perform the migration on.
+install the right libs, for example: @ditto/mongodb for write & read data from and to mongodb.
 *dump mongodb database to a local file*
+``` sh
+npm install @ditto/core @ditto/mongodb @ditto/filesystem-local --save
+```
 ```typescript
-import { MongoTransferer, MongoDBDuplexConnector, LocalFileSystemDuplexConnector } from 'mongodb-snapshot';
+import { Transferer } from '@ditto/core';
+import { MongoDBConnector } from '@ditto/mongodb';
+import { LocalFileSystemConnector } from '@ditto/filesystem-local';
 
 async function dumpMongo2Localfile() {
-    const mongo_connector = new MongoDBDuplexConnector({
+    const mongo_connector = new MongoDBConnector({
         connection: {
             uri: `mongodb://<username>:<password>@<hostname>:<port>`,
             dbname: '<database-name>',
         },
     });
 
-    const localfile_connector = new LocalFileSystemDuplexConnector({
+    const localfile_connector = new LocalFileSystemConnector({
         connection: {
             path: './backup.tar',
         },
     });
 
-    const transferer = new MongoTransferer({
+    const transferer = new Transferer({
         source: mongo_connector,
         targets: [localfile_connector],
     });
@@ -38,24 +49,29 @@ async function dumpMongo2Localfile() {
 ```
 
 *restore mongodb database from a local file*
+``` sh
+npm install @ditto/core @ditto/mongodb @ditto/filesystem-local --save
+```
 ```typescript
-import { MongoTransferer, MongoDBDuplexConnector, LocalFileSystemDuplexConnector } from 'mongodb-snapshot';
+import { Transferer } from '@ditto/core';
+import { MongoDBConnector } from '@ditto/mongodb';
+import { LocalFileSystemConnector } from '@ditto/filesystem-local';
 
 async function restoreLocalfile2Mongo() {
-    const mongo_connector = new MongoDBDuplexConnector({
+    const mongo_connector = new MongoDBConnector({
         connection: {
             uri: `mongodb://<username>:<password>@<hostname>:<port>`,
             dbname: '<database-name>',
         },
     });
 
-    const localfile_connector = new LocalFileSystemDuplexConnector({
+    const localfile_connector = new LocalFileSystemConnector({
         connection: {
             path: './backup.tar',
         },
     });
 
-    const transferer = new MongoTransferer({
+    const transferer = new Transferer({
         source: localfile_connector,
         targets: [mongo_connector],
     });
@@ -68,32 +84,36 @@ async function restoreLocalfile2Mongo() {
 
 
 *copy mongodb database to another mongodb database*
+``` sh
+npm install @ditto/core @ditto/mongodb --save
+```
 ```typescript
-import { MongoTransferer, MongoDBDuplexConnector } from 'mongodb-snapshot';
+import { Transferer } from '@ditto/core';
+import { MongoDBConnector } from '@ditto/mongodb';
 
 async function copyMongo2Mongo() {
-    const mongo_connector_1 = new MongoDBDuplexConnector({
+    const mongo_connector_1 = new MongoDBConnector({
         connection: {
             uri: `mongodb://<username>:<password>@<hostname>:<port>`,
             dbname: '<database-name>',
         },
     });
 
-    const mongo_connector_2 = new MongoDBDuplexConnector({
+    const mongo_connector_2 = new MongoDBConnector({
         connection: {
             uri: `mongodb://<username>:<password>@<hostname>:<port>`,
             dbname: '<database-name>',
         },
     });
 
-    const mongo_connector_3 = new MongoDBDuplexConnector({
+    const mongo_connector_3 = new MongoDBConnector({
         connection: {
             uri: `mongodb://<username>:<password>@<hostname>:<port>`,
             dbname: '<database-name>',
         },
     });
 
-    const transferer = new MongoTransferer({
+    const transferer = new Transferer({
         source: mongo_connector_1,
         targets: [mongo_connector_2, mongo_connector_3],
     });

@@ -5,12 +5,12 @@ import { mergeAll, map, mergeMap, bufferCount, toArray, filter } from 'rxjs/oper
 import * as joi from 'joi';
 import * as BSON from 'bson';
 
-import { TargetConnector, SourceConnector, CollectionData, Schema, SOURCE_CONNECTOR_BASE_OPTIONS_SCHEMA, TARGET_CONNECTOR_BASE_OPTIONS_SCHEMA, SourceConnectorBaseOptions, TargetConnectorBaseOptions } from '../Connector';
-import { MongoDBConnection, CollectionMetadata as CollectionMetadata } from "../../contracts";
-import { Validatable } from "../Validatable";
+import { TargetConnector, SourceConnector, CollectionData, Schema, SOURCE_CONNECTOR_BASE_OPTIONS_SCHEMA, TARGET_CONNECTOR_BASE_OPTIONS_SCHEMA, SourceConnectorBaseOptions, TargetConnectorBaseOptions } from '../../sdk/src/Connector';
+import { MongoDBConnection, CollectionMetadata as CollectionMetadata } from "../../sdk/src/contracts";
+import { Validatable } from "../../sdk/src/Validatable";
 import { pick, merge as loMerge, isString, isArray, isFunction, pickBy } from "lodash";
 import { eachValueFrom } from "rxjs-for-await";
-import { convertAsyncGeneratorToObservable, hasRegexMatch } from '../../utils';
+import { convertAsyncGeneratorToObservable, hasRegexMatch } from '../../core/src/utils';
 
 const BSON_DOC_HEADER_SIZE = 4;
 
@@ -98,10 +98,7 @@ type AsTargetMongoDBOptions = TargetConnectorBaseOptions & {
 type DocumentFilterFunction<D = any> = (doc: D) => FilterQuery<D>;
 type DocumentFilter = string | DocumentFilterFunction;
 
-interface CollectionDocument {
-    raw: Buffer, obj: { [key: string]: any }
-}
-export class MongoDBDuplexConnector extends Validatable implements SourceConnector, TargetConnector {
+export class MongoDBConnector extends Validatable implements SourceConnector, TargetConnector {
     type = 'MongoDB Connector';
 
     // options
@@ -196,7 +193,75 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
         }
     }
 
-    async writeCollectionMetadata(metadata: CollectionMetadata) {
+    write(datas: CollectionData[], metadatas: CollectionMetadata[]): Observable<number> {
+        return defer(() => {
+            const metadata$ = merge(
+                ...metadatas.map((metadata) =>
+                    from(this.writeCollectionMetadata(metadata))
+                )).pipe(toArray(), map(() => 0));
+
+            const content$ = merge(...datas.map(({ metadata, chunk$ }) =>
+                this.writeCollectionData(metadata.name, chunk$))
+            );
+
+            return concat(metadata$, content$);
+        });
+    }
+
+    async connect() {
+        const client = new MongoClient(this.connection.uri, {
+            connectTimeoutMS: this.connection.connectTimeoutMS || 5000,
+            raw: true,
+            keepAlive: true,
+            useNewUrlParser: true,
+            useUnifiedTopology: true,
+        });
+
+        this.client = await client.connect();
+
+        this.db = this.client.db(this.connection.dbname);
+        this.collections = await this.db.collections();
+    }
+
+    async close() {
+        if (this.client?.isConnected()) {
+            await this.client.close();
+        }
+
+        this.client = undefined;
+        this.db = undefined;
+        this.collections = undefined;
+    }
+
+    async transferable() {
+        if (!this.client?.isConnected() || !this.collections) {
+            throw new Error(`MongoDB client is not connected`);
+        }
+
+        const all_collections = this.collections.filter(
+            (collection) => !collection.collectionName.startsWith("system.")
+        );
+
+        return (await Promise.all(all_collections.map(async (collection) => {
+            try {
+                const [stats, indexes] = await Promise.all([collection.stats(), collection.indexes()]);
+
+                return {
+                    name: collection.collectionName,
+                    size: stats.size,
+                    count: stats.count,
+                    indexes,
+                };
+            }
+            catch (e) {
+                console.warn(`ignoring collection: "${collection.collectionName}", as we couldnt receive details due to an error: ${(e as any).message}`);
+
+                return null;
+            }
+        }))).filter(notEmpty);
+    }
+
+    private async writeCollectionMetadata(metadata: CollectionMetadata) {
         if (!this.db || !this.client?.isConnected()) {
             throw new Error("Need to connect to the data source before using this method.");
         }
@@ -211,14 +276,14 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
         return Promise.resolve();
     }
 
-    writeCollectionData(collection_name: string, chunk$: Observable<Buffer>): Observable<number> {
-        const documents$ = convertAsyncGeneratorToObservable(getDocumentsGenerator(chunk$))
+    private writeCollectionData(collection_name: string, chunk$: Observable<Buffer>): Observable<number> {
+        const document$ = document$(chunk$)
             .pipe(filter(({ obj: document }) => {
                 // filter documents to write into mongodb
                 return this.astarget.writeDocument ? this.astarget.writeDocument(collection_name, document) : true
             }));
 
-        return documents$.pipe(
+        return document$.pipe(
             bufferCount(this.astarget.documents_bulk_write_count),
             mergeMap(async (documents: CollectionDocument[]) => {
                 if (documents.length > 0) {
@@ -231,7 +296,7 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
         );
     }
 
-    async writeCollectionDocuments(collectionName: string, documents: [CollectionDocument]) {
+    private async writeCollectionDocuments(collectionName: string, documents: [CollectionDocument]) {
         if (!this.db) {
             throw new Error("Need to connect to the data source before using this method.");
         }
@@ -326,74 +391,6 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
                 return write(documents);
             })
     }
-
-    write(datas: CollectionData[], metadatas: CollectionMetadata[]): Observable<number> {
-        return defer(() => {
-            const metadata$ = merge(
-                ...metadatas.map((metadata) =>
-                    from(this.writeCollectionMetadata(metadata))
-                )).pipe(toArray(), map(() => 0));
-
-            const content$ = merge(...datas.map(({ metadata, chunk$ }) =>
-                this.writeCollectionData(metadata.name, chunk$))
-            );
-
-            return concat(metadata$, content$);
-        });
-    }
-
-    async connect() {
-        const client = new MongoClient(this.connection.uri, {
-            connectTimeoutMS: this.connection.connectTimeoutMS || 5000,
-            raw: true,
-            keepAlive: true,
-            useNewUrlParser: true,
-            useUnifiedTopology: true,
-        });
-
-        this.client = await client.connect();
-
-        this.db = this.client.db(this.connection.dbname);
-        this.collections = await this.db.collections();
-    }
-
-    async close() {
-        if (this.client?.isConnected()) {
-            await this.client.close();
-        }
-
-        this.client = undefined;
-        this.db = undefined;
-        this.collections = undefined;
-    }
-
-    async transferable() {
-        if (!this.client?.isConnected() || !this.collections) {
-            throw new Error(`MongoDB client is not connected`);
-        }
-
-        const all_collections = this.collections.filter(
-            (collection) => !collection.collectionName.startsWith("system.")
-        );
-
-        return (await Promise.all(all_collections.map(async (collection) => {
-            try {
-                const [stats, indexes] = await Promise.all([collection.stats(), collection.indexes()]);
-
-                return {
-                    name: collection.collectionName,
-                    size: stats.size,
-                    count: stats.count,
-                    indexes,
-                };
-            }
-            catch (e) {
-                console.warn(`ignoring collection: "${collection.collectionName}", as we couldnt receive details due to an error: ${(e as any).message}`);
-
-                return null;
-            }
-        }))).filter(notEmpty);
-    }
 }
 
 function notEmpty<TValue>(value: TValue | null | undefined): value is TValue {
@@ -410,41 +407,6 @@ function filterInvalidKeys(obj: { [key: string]: any }, filterKeyFn: (key: strin
     for (let k in obj) {
         if (obj[k] && typeof obj[k] === 'object') {
             filterInvalidKeys(obj[k], filterKeyFn);
-        }
-    }
-}
-
-async function* getDocumentsGenerator(chunk$: Observable<Buffer>): AsyncGenerator<CollectionDocument> {
-    let buffer = Buffer.alloc(0);
-
-    for await (const data of eachValueFrom(chunk$)) {
-        buffer = Buffer.concat([buffer, data]);
-
-        let next_doclen = null;
-
-        if (buffer.length >= BSON_DOC_HEADER_SIZE) {
-            next_doclen = buffer.readInt32LE(0);
-        } else {
-            next_doclen = null;
-        }
-
-        // flush all documents from the buffer
-        while (next_doclen && buffer.length >= next_doclen) {
-            const raw = buffer.slice(0, next_doclen);
-            const obj = BSON.deserialize(raw);
-
-            buffer = buffer.slice(next_doclen);
-
-            yield {
-                raw,
-                obj
-            };
-
-            if (buffer.length >= BSON_DOC_HEADER_SIZE) {
-                next_doclen = buffer.readInt32LE(0);
-            } else {
-                next_doclen = null;
-            }
         }
     }
 }

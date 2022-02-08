@@ -18,6 +18,6 @@
     ]
   },
   "exclude": [
-    "src/**/*.spec.ts"
+    "packages/core/src/**/*.spec.ts"
   ]
 }

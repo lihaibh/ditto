@@ -3,11 +3,11 @@ import { Observable, defer, EMPTY, merge, of } from "rxjs";
 import { filter, scan, catchError, switchMapTo, mergeAll, finalize } from 'rxjs/operators';
 import { eachValueFrom } from "rxjs-for-await";
 
-import { SourceConnector, TargetConnector } from "./connectors/Connector";
-import { Progress } from "./contracts";
+import { SourceConnector, TargetConnector } from "../../sdk/src/Connector";
+import { Progress } from "../../sdk/src/contracts";
 import { hasRegexesMatch } from './utils';
 
-interface MongoTransfererOptions {
+interface TransfererOptions {
   source: SourceConnector;
   targets: TargetConnector[];
 }
@@ -16,11 +16,11 @@ interface MongoTransfererOptions {
  * Transfers a snapshot of a database and stream it׳s content.
  * During the process the module emit events regarding the transfer process that you can subscribe to.
  */
-export class MongoTransferer implements AsyncIterable<Progress> {
+export class Transferer implements AsyncIterable<Progress> {
   private source: SourceConnector;
   private targets: TargetConnector[];
 
-  constructor({ source, targets = [] }: MongoTransfererOptions) {
+  constructor({ source, targets = [] }: TransfererOptions) {
     this.source = source;
     this.targets = [...targets];
   }
@@ -36,8 +36,8 @@ export class MongoTransferer implements AsyncIterable<Progress> {
    *
    * @example
    * ```js
-   * const source = new LocalFileSystemDuplexConnector(...);
-   * const target = new MongoDBDuplexConnector(...);
+   * const source = new LocalFileSystemConnector(...);
+   * const target = new MongoDBConnector(...);
    * 
    * const transferer = new MongoTransferer({ source, targets: [target] });
    *
@@ -106,6 +106,7 @@ export class MongoTransferer implements AsyncIterable<Progress> {
       );
 
       const writes = this.targets.map(target => {
+        // filter the data and the metadata to write to the target connector
         const target_collections = datas.filter(({ metadata: { name } }) =>
           (hasRegexesMatch(target.astarget.collections, name) || !target.astarget.collections) &&
           !hasRegexesMatch(target.astarget.exclude_collections, name)
@@ -116,6 +117,7 @@ export class MongoTransferer implements AsyncIterable<Progress> {
           !hasRegexesMatch(target.astarget.exclude_metadatas, name)
         );
 
+        // convert the write from the sour
         return {
           size: target_collections.reduce((total, { metadata: { size } }) => total + size, 0),
           write$: target.write(target_collections, target_metadatas).pipe(

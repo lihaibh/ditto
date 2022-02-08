@@ -4,9 +4,9 @@ import { pick, merge } from "lodash";
 import { promisify } from 'util';
 import * as zlib from 'zlib';
 
-import { FileSystemDuplexConnector } from "./FileSystemDuplexConnector";
-import { GzipOpts } from "../../contracts";
-import { TargetConnectorBaseOptions, SourceConnectorBaseOptions, SOURCE_CONNECTOR_BASE_OPTIONS_SCHEMA, TARGET_CONNECTOR_BASE_OPTIONS_SCHEMA } from '../Connector';
+import { FileSystemConnector } from "../../../sdk/src/filesystem/FileSystemConnector";
+import { GzipOpts } from "../../../sdk/src/contracts";
+import { TargetConnectorBaseOptions, SourceConnectorBaseOptions, SOURCE_CONNECTOR_BASE_OPTIONS_SCHEMA, TARGET_CONNECTOR_BASE_OPTIONS_SCHEMA } from '../../../sdk/src/Connector';
 
 const accessP = promisify(access);
 const unlinkP = promisify(unlink);
@@ -70,7 +70,7 @@ type AsLocalFileSystemTargetOptions = TargetConnectorBaseOptions & {
     bulk_write_size: number;
 }
 
-export class LocalFileSystemDuplexConnector extends FileSystemDuplexConnector {
+export class LocalFileSystemDuplexConnector extends FileSystemConnector {
     type = 'Local FileSystem Connector';
 
     // options

@@ -1,6 +1,6 @@
 import { TargetConnector, SourceConnector, CollectionData } from "../Connector";
 import { Readable, Writable } from "stream";
-import { GzipOpts, CollectionMetadata } from "../../contracts";
+import { GzipOpts, CollectionMetadata } from "../contracts";
 import { Observable, Observer, concat, ReplaySubject, defer, fromEvent, throwError } from "rxjs";
 import { groupBy, concatMap, toArray, map, take, catchError, scan, filter, share, takeLast, switchMap } from 'rxjs/operators';
 import * as tar from "tar-stream";
@@ -22,7 +22,7 @@ interface PartialCollectionMetadata {
     indexes?: any[];
 }
 
-export abstract class FileSystemDuplexConnector extends Validatable implements FileSystemSourceConnector, FileSystemTargetConnector {
+export abstract class FileSystemConnector extends Validatable implements FileSystemSourceConnector, FileSystemTargetConnector {
 
     write(datas: CollectionData[], metadatas: CollectionMetadata[]) {
         return defer(() => {

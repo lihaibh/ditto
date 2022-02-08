@@ -1,4 +1,4 @@
-import { CollectionMetadata } from "../contracts";
+import { CollectionMetadata } from "./contracts";
 import { Observable } from "rxjs";
 import * as joi from 'joi';
 
@@ -82,7 +82,8 @@ export interface SourceConnector extends Connector {
     transferable(): Promise<CollectionMetadata[]>;
 
     /**
-     * get stream of documents from the object inside the data source
+     * get stream of documents from the object inside the data source.
+     * The raw data comes in bson format.
      * 
      * @param metadata the collection׳s metadata from the source object
      */
@@ -165,6 +166,7 @@ export interface TargetConnector extends Connector {
 }
 
 export interface CollectionData {
+    // the stream of bytes of the collection in BSON format
     chunk$: Observable<Buffer>;
     metadata: CollectionMetadata;
 }
