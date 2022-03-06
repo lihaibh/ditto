@@ -1,7 +1,7 @@
 import { TargetConnector, SourceConnector, CollectionData } from "../Connector";
 import { Readable, Writable } from "stream";
 import { GzipOpts, CollectionMetadata } from "../../contracts";
-import { Observable, Observer, concat, ReplaySubject, defer, fromEvent, throwError } from "rxjs";
+import { Observable, Observer, concat, ReplaySubject, defer, fromEvent, throwError, of } from "rxjs";
 import { groupBy, concatMap, toArray, map, take, catchError, scan, filter, share, takeLast, switchMap } from 'rxjs/operators';
 import * as tar from "tar-stream";
 import * as zlib from "zlib";
@@ -234,6 +234,7 @@ function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: num
         * it is necessary to create a stream of empty chunks if the actual data stream is smaller than the metadata size
         * and trimming the stream of data if it is bigger than the metadata size.
         */
+        // when the data stream is bigger than the metadata size of the collection
         const trimmed$ = getTrimmedChunk$({
             chunk$,
             totalBytes: metadata.size
@@ -242,17 +243,23 @@ function packCollectionData$(pack: tar.Pack, metadata: { name: string, size: num
         );
 
         const content$ = trimmed$.pipe(map(({ chunk }) => chunk)) as Observable<Buffer>;
-        const remain$ = trimmed$.pipe(
-            takeLast(1),
-            switchMap(({
-                totalBytes
-            }) =>
+
+        // handling when the data stream is smaller than the metadata size of the collection
+        const remain$ = concat(
+                trimmed$.pipe(takeLast(1), map(({accumulatedTotalBytes: totalBytes}) => metadata.size - totalBytes)),
+                // this is necessary to handle a case when the data stream is empty
+                of(metadata.size),
+        ).pipe(
+            // always emits one value, either the remaining bytes by the actual size of the chunk stream or metadata size
+            take(1),
+            switchMap((remainBytes) =>
                 getEmptyChunk$({
                     chunkSize: fillEmptyChunkSize,
-                    totalBytes: metadata.size - totalBytes
+                    totalBytes: remainBytes
                 })
             )
-        )
+        );
+
         const write$ = concat(content$, remain$);
 
         const entry = pack.entry({ name: `${metadata.name}.bson`, size: metadata.size }, (error) => {
@@ -301,35 +308,35 @@ function getTrimmedChunk$(opts: {
 }) {
     return opts.chunk$.pipe(
         // cutting extra data from the stream
-        scan<Buffer, { totalBytes: number, chunk?: Buffer }>(
+        scan<Buffer, { accumulatedTotalBytes: number, chunk?: Buffer }>(
             (acc, chunk) => {
-                const remainingBytes = opts.totalBytes - acc.totalBytes;
+                const remainingBytes = opts.totalBytes - acc.accumulatedTotalBytes;
 
                 if (remainingBytes > 0) {
                     if (chunk.length < remainingBytes) {
                         return {
                             chunk,
-                            totalBytes: acc.totalBytes + chunk.length
+                            accumulatedTotalBytes: acc.accumulatedTotalBytes + chunk.length
                         }
                     } else {
                         return {
                             chunk: chunk.slice(0, remainingBytes),
-                            totalBytes: opts.totalBytes
+                            accumulatedTotalBytes: opts.totalBytes
                         }
                     }
                 } else {
                     return {
-                        totalBytes: opts.totalBytes
+                        accumulatedTotalBytes: opts.totalBytes
                     }
                 }
 
             },
             {
-                totalBytes: 0,
+                accumulatedTotalBytes: 0,
             }
         ),
         filter(({
-            totalBytes,
+            accumulatedTotalBytes: totalBytes,
             chunk
         }) => {
             return totalBytes > 0 && chunk !== undefined
