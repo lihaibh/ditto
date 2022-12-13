@@ -26,6 +26,7 @@ const schema = joi.object(<Schema<MongoDBConnectorOptions>>{
         connectTimeoutMS: joi.number().optional(),
         isAtlasFreeTier: joi.boolean().optional()
     }).required(),
+    includeCollections: joi.array().optional(),
     assource: joi.object(<Schema<AsSourceMongoDBOptions>>{
         ...SOURCE_CONNECTOR_BASE_OPTIONS_SCHEMA,
     }).required(),
@@ -45,6 +46,7 @@ const schema = joi.object(<Schema<MongoDBConnectorOptions>>{
 
 export interface MongoDBConnectorOptions {
     connection: MongoDBConnection;
+    includeCollections: string[];
 
     /**
      * data related to this connector as a source
@@ -109,16 +111,18 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
     astarget: AsTargetMongoDBOptions;
 
     connection: MongoDBConnection;
+    includeCollections: string[];
 
     // session data (after successful connection)
     private client?: MongoClient;
     private db?: Db;
     private collections?: Collection<any>[];
 
-    constructor({ connection, assource = {}, astarget = {} }: MongoDBConnectorOptions) {
+    constructor({ connection, includeCollections = [], assource = {}, astarget = {} }: MongoDBConnectorOptions) {
         super();
 
         this.connection = connection;
+        this.includeCollections = includeCollections;
 
         this.assource = loMerge({ bulk_read_size: 50 * 1024 }, assource);
         this.astarget = loMerge({ remove_on_failure: false, remove_on_startup: false, documents_bulk_write_count: 1000 }, astarget);
@@ -373,7 +377,9 @@ export class MongoDBDuplexConnector extends Validatable implements SourceConnect
         }
 
         const all_collections = this.collections.filter(
-            (collection) => !collection.collectionName.startsWith("system.")
+            (collection) => !collection.collectionName.startsWith("system.")).filter(
+            (collection) =>
+                (this.includeCollections?.length) ? this.includeCollections.includes(collection.collectionName) : true
         );
 
         return (await Promise.all(all_collections.map(async (collection) => {
